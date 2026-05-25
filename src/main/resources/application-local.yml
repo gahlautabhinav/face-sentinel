@@ -1,0 +1,19 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/logbook360_face
+    username: postgres
+    password: postgres
+  jpa:
+    show-sql: true
+
+aws:
+  region: ap-south-1
+  s3:
+    bucket-name: logbook360-face-dev
+  rekognition:
+    collection-prefix: logbook360-dev
+    similarity-threshold: 85.0
+
+face-recognition:
+  liveness:
+    enabled: false

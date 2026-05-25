@@ -1,0 +1,49 @@
+package com.logbook360.facerec.controller;
+
+import com.logbook360.facerec.dto.response.ApiResponse;
+import com.logbook360.facerec.dto.response.FaceEnrollResponse;
+import com.logbook360.facerec.dto.response.FaceIdentifyResponse;
+import com.logbook360.facerec.service.FaceDeletionService;
+import com.logbook360.facerec.service.FaceEnrollmentService;
+import com.logbook360.facerec.service.FaceIdentificationService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/api/face")
+@RequiredArgsConstructor
+public class FaceController {
+
+    private final FaceEnrollmentService enrollmentService;
+    private final FaceIdentificationService identificationService;
+    private final FaceDeletionService deletionService;
+
+    @PostMapping("/enroll")
+    public ResponseEntity<ApiResponse<FaceEnrollResponse>> enroll(
+            @RequestHeader("X-Tenant-Id") UUID tenantId,
+            @RequestParam("visitorId") UUID visitorId,
+            @RequestPart("image") MultipartFile image) {
+        FaceEnrollResponse response = enrollmentService.enrollFace(tenantId, visitorId, image);
+        return ResponseEntity.ok(ApiResponse.success(response, response.getMessage()));
+    }
+
+    @PostMapping("/identify")
+    public ResponseEntity<ApiResponse<FaceIdentifyResponse>> identify(
+            @RequestHeader("X-Tenant-Id") UUID tenantId,
+            @RequestPart("image") MultipartFile image) {
+        FaceIdentifyResponse response = identificationService.identifyFace(tenantId, image);
+        return ResponseEntity.ok(ApiResponse.success(response, response.getMessage()));
+    }
+
+    @DeleteMapping("/{visitorId}")
+    public ResponseEntity<ApiResponse<Void>> delete(
+            @RequestHeader("X-Tenant-Id") UUID tenantId,
+            @PathVariable UUID visitorId) {
+        deletionService.deleteFace(tenantId, visitorId);
+        return ResponseEntity.ok(ApiResponse.success(null, "Face deleted successfully"));
+    }
+}

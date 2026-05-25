@@ -1,0 +1,42 @@
+spring:
+  application:
+    name: logbook360-face-recognition
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 12MB
+
+aws:
+  region: ${AWS_REGION:ap-south-1}
+  s3:
+    bucket-name: ${AWS_S3_BUCKET}
+  rekognition:
+    collection-prefix: ${REKOGNITION_COLLECTION_PREFIX:logbook360}
+    similarity-threshold: ${REKOGNITION_SIMILARITY_THRESHOLD:90.0}
+
+face-recognition:
+  enabled: true
+  liveness:
+    enabled: ${FACE_LIVENESS_ENABLED:false}
+
+server:
+  port: 8080
+  error:
+    include-message: never
+    include-stacktrace: never
