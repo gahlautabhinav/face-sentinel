@@ -44,7 +44,7 @@ class RekognitionServiceTest {
 
         rekognitionService.createCollectionIfNotExists("logbook360-test-tenant");
 
-        verify(rekognitionClient, never()).createCollection(any());
+        verify(rekognitionClient, never()).createCollection(any(CreateCollectionRequest.class));
     }
 
     @Test
