@@ -122,6 +122,7 @@ public class FaceVerificationService {
         if (faces.isEmpty()) {
             return FaceVerifyResponse.builder()
                     .verified(false)
+                    .positionError(true)
                     .visitorId(visitorId)
                     .message("No face detected — look at the camera")
                     .build();
@@ -130,6 +131,7 @@ public class FaceVerificationService {
         if (faces.size() > 1) {
             return FaceVerifyResponse.builder()
                     .verified(false)
+                    .positionError(true)
                     .visitorId(visitorId)
                     .message("Multiple people detected — only one person allowed")
                     .build();
@@ -140,6 +142,7 @@ public class FaceVerificationService {
         if (box.width() < minFaceCoverage) {
             return FaceVerifyResponse.builder()
                     .verified(false)
+                    .positionError(true)
                     .visitorId(visitorId)
                     .message("Move closer to the camera")
                     .build();
@@ -151,6 +154,7 @@ public class FaceVerificationService {
         if (Math.abs(faceCenterX - 0.5f) > maxCenterOffset || Math.abs(faceCenterY - 0.5f) > maxCenterOffset) {
             return FaceVerifyResponse.builder()
                     .verified(false)
+                    .positionError(true)
                     .visitorId(visitorId)
                     .message("Center your face in the frame")
                     .build();

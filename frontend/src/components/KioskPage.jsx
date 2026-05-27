@@ -5,7 +5,7 @@ import AccessResult from './AccessResult.jsx'
 
 const CAPTURE_INTERVAL_MS = 1500
 const AUTO_RESET_MS = 10000
-const MAX_ATTEMPTS = 5
+const MAX_ATTEMPTS = 8
 
 export default function KioskPage() {
   const videoRef = useRef(null)
@@ -77,9 +77,6 @@ export default function KioskPage() {
       const canvas = canvasRef.current
       if (!canvas) return
 
-      attemptCount++
-      setAttempts(attemptCount)
-
       canvas.toBlob(async blob => {
         if (!blob) return
         try {
@@ -90,6 +87,10 @@ export default function KioskPage() {
           })
           if (res.data?.message) {
             setStatus(res.data.message)
+          }
+          if (!res.data?.positionError) {
+            attemptCount++
+            setAttempts(attemptCount)
           }
           if (res.data?.verified) {
             clearInterval(intervalRef.current)

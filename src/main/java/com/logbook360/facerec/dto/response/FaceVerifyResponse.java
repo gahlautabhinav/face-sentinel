@@ -9,6 +9,7 @@ import java.util.UUID;
 @Builder
 public class FaceVerifyResponse {
     private boolean verified;
+    private boolean positionError;
     private UUID visitorId;
     private String visitorName;
     private Double similarity;
