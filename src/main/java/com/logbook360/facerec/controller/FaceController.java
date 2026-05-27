@@ -3,9 +3,11 @@ package com.logbook360.facerec.controller;
 import com.logbook360.facerec.dto.response.ApiResponse;
 import com.logbook360.facerec.dto.response.FaceEnrollResponse;
 import com.logbook360.facerec.dto.response.FaceIdentifyResponse;
+import com.logbook360.facerec.dto.response.FaceVerifyResponse;
 import com.logbook360.facerec.service.FaceDeletionService;
 import com.logbook360.facerec.service.FaceEnrollmentService;
 import com.logbook360.facerec.service.FaceIdentificationService;
+import com.logbook360.facerec.service.FaceVerificationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -21,6 +23,7 @@ public class FaceController {
     private final FaceEnrollmentService enrollmentService;
     private final FaceIdentificationService identificationService;
     private final FaceDeletionService deletionService;
+    private final FaceVerificationService verificationService;
 
     @PostMapping("/enroll")
     public ResponseEntity<ApiResponse<FaceEnrollResponse>> enroll(
@@ -36,6 +39,15 @@ public class FaceController {
             @RequestHeader("X-Tenant-Id") UUID tenantId,
             @RequestPart("image") MultipartFile image) {
         FaceIdentifyResponse response = identificationService.identifyFace(tenantId, image);
+        return ResponseEntity.ok(ApiResponse.success(response, response.getMessage()));
+    }
+
+    @PostMapping("/verify")
+    public ResponseEntity<ApiResponse<FaceVerifyResponse>> verify(
+            @RequestHeader("X-Tenant-Id") UUID tenantId,
+            @RequestParam("visitorId") UUID visitorId,
+            @RequestPart("image") MultipartFile image) {
+        FaceVerifyResponse response = verificationService.verifyFace(tenantId, visitorId, image);
         return ResponseEntity.ok(ApiResponse.success(response, response.getMessage()));
     }
 

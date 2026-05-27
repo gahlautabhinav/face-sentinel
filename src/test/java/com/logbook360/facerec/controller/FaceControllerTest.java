@@ -7,6 +7,7 @@ import com.logbook360.facerec.exception.FaceNotFoundException;
 import com.logbook360.facerec.service.FaceDeletionService;
 import com.logbook360.facerec.service.FaceEnrollmentService;
 import com.logbook360.facerec.service.FaceIdentificationService;
+import com.logbook360.facerec.service.FaceVerificationService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -30,6 +31,7 @@ class FaceControllerTest {
     @MockBean private FaceEnrollmentService enrollmentService;
     @MockBean private FaceIdentificationService identificationService;
     @MockBean private FaceDeletionService deletionService;
+    @MockBean private FaceVerificationService verificationService;
 
     @Test
     void enrollReturns200OnSuccess() throws Exception {
