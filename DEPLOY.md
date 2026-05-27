@@ -167,16 +167,20 @@ Attach `logbook360-face-policy` to this role. **No access keys needed in ECS** �
 
 Store secrets:
 ```
-logbook360/face-service/db-password    → RDS password
-logbook360/face-service/jwt-secret     → 256-bit hex string (Phase 3)
+logbook360/face-service/db-password       → RDS password
+logbook360/face-service/jwt-secret        → random 48-char string (generate: see .env.example)
+logbook360/face-service/admin-secret      → ADMIN_CLIENT_SECRET
+logbook360/face-service/kiosk-secret      → KIOSK_CLIENT_SECRET
 ```
 
 In ECS task definition, inject secrets as environment variables:
 ```json
-{
-  "name": "DB_PASSWORD",
-  "valueFrom": "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:logbook360/face-service/db-password"
-}
+[
+  { "name": "DB_PASSWORD",        "valueFrom": "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:logbook360/face-service/db-password" },
+  { "name": "JWT_SECRET",         "valueFrom": "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:logbook360/face-service/jwt-secret" },
+  { "name": "ADMIN_CLIENT_SECRET","valueFrom": "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:logbook360/face-service/admin-secret" },
+  { "name": "KIOSK_CLIENT_SECRET","valueFrom": "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:logbook360/face-service/kiosk-secret" }
+]
 ```
 
 ### Step 5: ECS Task Definition
@@ -195,9 +199,17 @@ Key settings:
     { "name": "AWS_S3_BUCKET", "value": "logbook360-face-prod" },
     { "name": "REKOGNITION_COLLECTION_PREFIX", "value": "logbook360" },
     { "name": "REKOGNITION_SIMILARITY_THRESHOLD", "value": "92.0" },
-    { "name": "FACE_LIVENESS_ENABLED", "value": "false" }
+    { "name": "REKOGNITION_MIN_FACE_COVERAGE", "value": "0.12" },
+    { "name": "REKOGNITION_MAX_CENTER_OFFSET", "value": "0.22" },
+    { "name": "FACE_LIVENESS_ENABLED", "value": "false" },
+    { "name": "JWT_EXPIRY_HOURS", "value": "24" },
+    { "name": "ADMIN_CLIENT_ID", "value": "logbook360-admin" },
+    { "name": "KIOSK_CLIENT_ID", "value": "logbook360-kiosk" }
   ]
 }
+```
+
+Note: `ADMIN_CLIENT_SECRET`, `KIOSK_CLIENT_SECRET`, `JWT_SECRET`, `DB_PASSWORD` come from Secrets Manager (see Step 4), not from `environment` array.
 ```
 
 Note: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are **not set** — task role handles auth.
@@ -282,5 +294,7 @@ Note: Actuator not yet added — add `spring-boot-starter-actuator` dependency w
 - [ ] S3 bucket has SSE-AES256 encryption
 - [ ] IAM policy scoped to `logbook360-*` resources only
 - [ ] RDS in private subnet only
-- [ ] JWT secret stored in Secrets Manager (Phase 3)
+- [ ] JWT secret stored in Secrets Manager (not in env/code)
+- [ ] ADMIN_CLIENT_SECRET and KIOSK_CLIENT_SECRET stored in Secrets Manager
+- [ ] All Phase 3 env vars present: JWT_SECRET, JWT_EXPIRY_HOURS, ADMIN_CLIENT_ID, ADMIN_CLIENT_SECRET, KIOSK_CLIENT_ID, KIOSK_CLIENT_SECRET
 - [ ] Similarity threshold at 92.0+ in production

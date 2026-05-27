@@ -37,6 +37,16 @@ face-recognition:
   liveness:
     enabled: ${FACE_LIVENESS_ENABLED:false}
 
+jwt:
+  secret: ${JWT_SECRET:changeme-jwt-secret-for-dev-only-min-32-chars}
+  expiry-hours: ${JWT_EXPIRY_HOURS:24}
+
+auth:
+  admin-client-id: ${ADMIN_CLIENT_ID:logbook360-admin}
+  admin-client-secret: ${ADMIN_CLIENT_SECRET:changeme-admin-secret}
+  kiosk-client-id: ${KIOSK_CLIENT_ID:logbook360-kiosk}
+  kiosk-client-secret: ${KIOSK_CLIENT_SECRET:changeme-kiosk-secret}
+
 server:
   port: 8080
   error:

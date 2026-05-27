@@ -4,15 +4,19 @@ import com.logbook360.facerec.dto.response.FaceEnrollResponse;
 import com.logbook360.facerec.dto.response.FaceIdentifyResponse;
 import com.logbook360.facerec.exception.DuplicateEnrollmentException;
 import com.logbook360.facerec.exception.FaceNotFoundException;
+import com.logbook360.facerec.security.JwtService;
 import com.logbook360.facerec.service.FaceDeletionService;
 import com.logbook360.facerec.service.FaceEnrollmentService;
 import com.logbook360.facerec.service.FaceIdentificationService;
 import com.logbook360.facerec.service.FaceVerificationService;
+import com.logbook360.facerec.config.SecurityConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.annotation.Import;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.UUID;
@@ -23,6 +27,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(FaceController.class)
+@Import(SecurityConfig.class)
 class FaceControllerTest {
 
     @Autowired
@@ -32,8 +37,10 @@ class FaceControllerTest {
     @MockBean private FaceIdentificationService identificationService;
     @MockBean private FaceDeletionService deletionService;
     @MockBean private FaceVerificationService verificationService;
+    @MockBean private JwtService jwtService;
 
     @Test
+    @WithMockUser(roles = "ADMIN")
     void enrollReturns200OnSuccess() throws Exception {
         UUID tenantId = UUID.randomUUID();
         UUID visitorId = UUID.randomUUID();
@@ -58,6 +65,7 @@ class FaceControllerTest {
     }
 
     @Test
+    @WithMockUser(roles = "ADMIN")
     void enrollReturns409OnDuplicate() throws Exception {
         UUID tenantId = UUID.randomUUID();
         UUID visitorId = UUID.randomUUID();
@@ -76,6 +84,7 @@ class FaceControllerTest {
     }
 
     @Test
+    @WithMockUser(roles = "KIOSK")
     void identifyReturns200WhenMatched() throws Exception {
         UUID tenantId = UUID.randomUUID();
         UUID visitorId = UUID.randomUUID();
@@ -100,6 +109,7 @@ class FaceControllerTest {
     }
 
     @Test
+    @WithMockUser(roles = "ADMIN")
     void deleteReturns200OnSuccess() throws Exception {
         UUID tenantId = UUID.randomUUID();
         UUID visitorId = UUID.randomUUID();
@@ -113,6 +123,7 @@ class FaceControllerTest {
     }
 
     @Test
+    @WithMockUser(roles = "ADMIN")
     void deleteReturns404WhenNotEnrolled() throws Exception {
         UUID tenantId = UUID.randomUUID();
         UUID visitorId = UUID.randomUUID();
