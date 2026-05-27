@@ -117,9 +117,12 @@ public class FaceVerificationService {
     // Returns a rejection response if the frame fails position checks, null if OK to proceed.
     private FaceVerifyResponse validateFacePosition(UUID visitorId, byte[] imageBytes) {
         DetectFacesResponse detectResponse = rekognitionService.detectFaces(imageBytes);
-        List<FaceDetail> faces = detectResponse.faceDetails();
+        List<FaceDetail> allFaces = detectResponse.faceDetails();
+        List<FaceDetail> significantFaces = allFaces.stream()
+                .filter(f -> f.boundingBox().width() >= minFaceCoverage)
+                .collect(java.util.stream.Collectors.toList());
 
-        if (faces.isEmpty()) {
+        if (allFaces.isEmpty()) {
             return FaceVerifyResponse.builder()
                     .verified(false)
                     .positionError(true)
@@ -128,18 +131,8 @@ public class FaceVerificationService {
                     .build();
         }
 
-        if (faces.size() > 1) {
-            return FaceVerifyResponse.builder()
-                    .verified(false)
-                    .positionError(true)
-                    .visitorId(visitorId)
-                    .message("Multiple people detected — only one person allowed")
-                    .build();
-        }
-
-        BoundingBox box = faces.get(0).boundingBox();
-
-        if (box.width() < minFaceCoverage) {
+        // Faces detected but all too small — person is there but too far
+        if (significantFaces.isEmpty()) {
             return FaceVerifyResponse.builder()
                     .verified(false)
                     .positionError(true)
@@ -148,6 +141,17 @@ public class FaceVerificationService {
                     .build();
         }
 
+        // Multiple people at kiosk distance — background faces ignored
+        if (significantFaces.size() > 1) {
+            return FaceVerifyResponse.builder()
+                    .verified(false)
+                    .positionError(true)
+                    .visitorId(visitorId)
+                    .message("Multiple people detected — only one person allowed")
+                    .build();
+        }
+
+        BoundingBox box = significantFaces.get(0).boundingBox();
         float faceCenterX = box.left() + box.width() / 2.0f;
         float faceCenterY = box.top() + box.height() / 2.0f;
 
