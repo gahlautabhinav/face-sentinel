@@ -74,8 +74,9 @@ export default function KioskPage() {
     let attemptCount = 0
 
     intervalRef.current = setInterval(() => {
+      const frame = captureFrame()
+      if (!frame) return
       const canvas = canvasRef.current
-      if (!canvas) return
 
       canvas.toBlob(async blob => {
         if (!blob) return
@@ -110,7 +111,7 @@ export default function KioskPage() {
     }, CAPTURE_INTERVAL_MS)
 
     return () => clearInterval(intervalRef.current)
-  }, [phase, qrData])
+  }, [phase, qrData, captureFrame])
 
   function handleReset() {
     clearInterval(intervalRef.current)

@@ -29,7 +29,7 @@ aws:
   rekognition:
     collection-prefix: ${REKOGNITION_COLLECTION_PREFIX:logbook360}
     similarity-threshold: ${REKOGNITION_SIMILARITY_THRESHOLD:90.0}
-    min-face-coverage: ${REKOGNITION_MIN_FACE_COVERAGE:0.15}
+    min-face-coverage: ${REKOGNITION_MIN_FACE_COVERAGE:0.10}
     max-center-offset: ${REKOGNITION_MAX_CENTER_OFFSET:0.25}
 
 face-recognition:
