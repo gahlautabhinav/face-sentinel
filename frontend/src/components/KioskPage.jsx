@@ -88,6 +88,9 @@ export default function KioskPage() {
             visitorId: qrData.visitorId,
             imageBlob: blob,
           })
+          if (res.data?.message) {
+            setStatus(res.data.message)
+          }
           if (res.data?.verified) {
             clearInterval(intervalRef.current)
             setResult(res)

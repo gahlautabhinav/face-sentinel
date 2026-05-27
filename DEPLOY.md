@@ -17,7 +17,6 @@ Create policy `logbook360-face-policy` in AWS IAM console:
     {
       "Effect": "Allow",
       "Action": [
-        "rekognition:DetectFaces",
         "rekognition:IndexFaces",
         "rekognition:SearchFacesByImage",
         "rekognition:CreateCollection",
@@ -25,6 +24,13 @@ Create policy `logbook360-face-policy` in AWS IAM console:
         "rekognition:DeleteFaces"
       ],
       "Resource": "arn:aws:rekognition:ap-south-1:*:collection/logbook360-*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "rekognition:DetectFaces"
+      ],
+      "Resource": "*"
     },
     {
       "Effect": "Allow",
