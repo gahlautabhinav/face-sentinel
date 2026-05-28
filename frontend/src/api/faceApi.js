@@ -1,11 +1,29 @@
+import { getToken, clearToken } from './authApi.js'
+
 const BASE = '/api/face'
+
+async function authFetch(role, url, init = {}) {
+  const token = await getToken(role)
+  const res = await fetch(url, {
+    ...init,
+    headers: { ...init.headers, Authorization: `Bearer ${token}` },
+  })
+  if (res.status === 401) {
+    clearToken(role)
+    const fresh = await getToken(role)
+    return fetch(url, {
+      ...init,
+      headers: { ...init.headers, Authorization: `Bearer ${fresh}` },
+    })
+  }
+  return res
+}
 
 export async function enrollFace({ tenantId, visitorId, imageFile }) {
   const form = new FormData()
   form.append('visitorId', visitorId)
   form.append('image', imageFile)
-
-  const res = await fetch(`${BASE}/enroll`, {
+  const res = await authFetch('ADMIN', `${BASE}/enroll`, {
     method: 'POST',
     headers: { 'X-Tenant-Id': tenantId },
     body: form,
@@ -16,8 +34,7 @@ export async function enrollFace({ tenantId, visitorId, imageFile }) {
 export async function identifyFace({ tenantId, imageFile }) {
   const form = new FormData()
   form.append('image', imageFile)
-
-  const res = await fetch(`${BASE}/identify`, {
+  const res = await authFetch('KIOSK', `${BASE}/identify`, {
     method: 'POST',
     headers: { 'X-Tenant-Id': tenantId },
     body: form,
@@ -29,7 +46,7 @@ export async function verifyFace({ tenantId, visitorId, imageBlob }) {
   const form = new FormData()
   form.append('visitorId', visitorId)
   form.append('image', imageBlob, 'kiosk.jpg')
-  const res = await fetch(`${BASE}/verify`, {
+  const res = await authFetch('KIOSK', `${BASE}/verify`, {
     method: 'POST',
     headers: { 'X-Tenant-Id': tenantId },
     body: form,
@@ -42,7 +59,7 @@ export async function verifyFace({ tenantId, visitorId, imageBlob }) {
 }
 
 export async function deleteFace({ tenantId, visitorId }) {
-  const res = await fetch(`${BASE}/${visitorId}`, {
+  const res = await authFetch('ADMIN', `${BASE}/${visitorId}`, {
     method: 'DELETE',
     headers: { 'X-Tenant-Id': tenantId },
   })
