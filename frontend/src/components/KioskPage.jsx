@@ -1,7 +1,8 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import jsQR from 'jsqr'
-import { verifyFace } from '../api/faceApi.js'
+import { verifyFace, createLivenessSession, getLivenessResult } from '../api/faceApi.js'
 import AccessResult from './AccessResult.jsx'
+import LivenessChallenge from './LivenessChallenge.jsx'
 
 const CAPTURE_INTERVAL_MS = 1500
 const AUTO_RESET_MS = 10000
@@ -13,11 +14,12 @@ export default function KioskPage() {
   const intervalRef = useRef(null)
   const streamRef = useRef(null)
 
-  const [phase, setPhase] = useState('qr')     // 'qr' | 'verifying' | 'result'
+  const [phase, setPhase] = useState('qr')     // 'qr' | 'liveness' | 'verifying' | 'result'
   const [qrData, setQrData] = useState(null)   // { visitorId, tenantId }
   const [result, setResult] = useState(null)
   const [attempts, setAttempts] = useState(0)
   const [status, setStatus] = useState('Show your QR code to the camera')
+  const [livenessSessionId, setLivenessSessionId] = useState(null)
 
   useEffect(() => {
     navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 1280, height: 720 } })
@@ -58,8 +60,13 @@ export default function KioskPage() {
         if (parsed.visitorId && parsed.tenantId) {
           clearInterval(intervalRef.current)
           setQrData(parsed)
-          setPhase('verifying')
-          setStatus('QR scanned. Verifying identity…')
+          setStatus('QR scanned. Starting liveness check…')
+          createLivenessSession('KIOSK')
+            .then(res => {
+              setLivenessSessionId(res.data.sessionId)
+              setPhase('liveness')
+            })
+            .catch(() => setStatus('Failed to start liveness. Try again.'))
         }
       } catch {
         // not valid JSON — ignore
@@ -67,6 +74,22 @@ export default function KioskPage() {
     }, 300)
     return () => clearInterval(intervalRef.current)
   }, [phase, captureFrame])
+
+  async function handleLivenessComplete() {
+    try {
+      const res = await getLivenessResult(livenessSessionId, 'KIOSK')
+      if (res.data?.passed) {
+        setPhase('verifying')
+        setStatus('Liveness passed. Verifying identity…')
+      } else {
+        setStatus('Liveness check failed. Please try again.')
+        setTimeout(handleReset, 4000)
+      }
+    } catch {
+      setStatus('Liveness check error. Please try again.')
+      setTimeout(handleReset, 4000)
+    }
+  }
 
   // Face verify loop
   useEffect(() => {
@@ -120,6 +143,7 @@ export default function KioskPage() {
     setResult(null)
     setAttempts(0)
     setStatus('Show your QR code to the camera')
+    setLivenessSessionId(null)
   }
 
   return (
@@ -133,7 +157,25 @@ export default function KioskPage() {
       />
       <canvas ref={canvasRef} style={{ display: 'none' }} />
 
-      {phase !== 'result' && (
+      {phase === 'liveness' && livenessSessionId && (
+        <div style={{
+          position: 'absolute', inset: 0,
+          background: '#000', zIndex: 10,
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <LivenessChallenge
+            sessionId={livenessSessionId}
+            region={import.meta.env.VITE_AWS_REGION || 'ap-south-1'}
+            onComplete={handleLivenessComplete}
+            onError={() => {
+              setStatus('Liveness error. Please try again.')
+              setTimeout(handleReset, 3000)
+            }}
+          />
+        </div>
+      )}
+
+      {phase !== 'result' && phase !== 'liveness' && (
         <div style={{
           position: 'absolute', bottom: 40, left: 0, right: 0,
           textAlign: 'center', color: '#fff',

@@ -1,5 +1,6 @@
 package com.logbook360.facerec.controller;
 
+import com.logbook360.facerec.dto.request.LivenessEnrollRequest;
 import com.logbook360.facerec.dto.response.ApiResponse;
 import com.logbook360.facerec.dto.response.FaceEnrollResponse;
 import com.logbook360.facerec.dto.response.FaceIdentifyResponse;
@@ -8,6 +9,8 @@ import com.logbook360.facerec.service.FaceDeletionService;
 import com.logbook360.facerec.service.FaceEnrollmentService;
 import com.logbook360.facerec.service.FaceIdentificationService;
 import com.logbook360.facerec.service.FaceVerificationService;
+import com.logbook360.facerec.service.LivenessService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -24,6 +27,7 @@ public class FaceController {
     private final FaceIdentificationService identificationService;
     private final FaceDeletionService deletionService;
     private final FaceVerificationService verificationService;
+    private final LivenessService livenessService;
 
     @PostMapping("/enroll")
     public ResponseEntity<ApiResponse<FaceEnrollResponse>> enroll(
@@ -48,6 +52,15 @@ public class FaceController {
             @RequestParam("visitorId") UUID visitorId,
             @RequestPart("image") MultipartFile image) {
         FaceVerifyResponse response = verificationService.verifyFace(tenantId, visitorId, image);
+        return ResponseEntity.ok(ApiResponse.success(response, response.getMessage()));
+    }
+
+    @PostMapping("/enroll-live")
+    public ResponseEntity<ApiResponse<FaceEnrollResponse>> enrollLive(
+            @RequestHeader("X-Tenant-Id") UUID tenantId,
+            @RequestBody @Valid LivenessEnrollRequest request) {
+        FaceEnrollResponse response = livenessService.enrollFromSession(
+                tenantId, request.getVisitorId(), request.getSessionId());
         return ResponseEntity.ok(ApiResponse.success(response, response.getMessage()));
     }
 

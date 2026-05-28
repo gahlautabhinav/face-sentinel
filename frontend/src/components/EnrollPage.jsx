@@ -1,23 +1,25 @@
 import { useState } from 'react'
-import ImagePicker from './ImagePicker.jsx'
 import ResultBox from './ResultBox.jsx'
-import { enrollFace } from '../api/faceApi.js'
+import LivenessChallenge from './LivenessChallenge.jsx'
+import { createLivenessSession, enrollLive } from '../api/faceApi.js'
 
 export default function EnrollPage() {
   const [tenantId, setTenantId] = useState('')
   const [visitorId, setVisitorId] = useState('')
-  const [imageFile, setImageFile] = useState(null)
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
+  const [livenessSessionId, setLivenessSessionId] = useState(null)
+  const [showLiveness, setShowLiveness] = useState(false)
 
-  async function handleSubmit(e) {
+  async function handleStartLiveness(e) {
     e.preventDefault()
-    if (!tenantId || !visitorId || !imageFile) return
+    if (!tenantId || !visitorId) return
     setLoading(true)
     setResult(null)
     try {
-      const data = await enrollFace({ tenantId, visitorId, imageFile })
-      setResult(data)
+      const res = await createLivenessSession('ADMIN')
+      setLivenessSessionId(res.data.sessionId)
+      setShowLiveness(true)
     } catch (err) {
       setResult({ success: false, message: err.message })
     } finally {
@@ -25,12 +27,54 @@ export default function EnrollPage() {
     }
   }
 
+  async function handleLivenessComplete() {
+    setShowLiveness(false)
+    setLoading(true)
+    try {
+      const data = await enrollLive({ tenantId, visitorId, sessionId: livenessSessionId })
+      setResult(data)
+    } catch (err) {
+      setResult({ success: false, message: err.message })
+    } finally {
+      setLoading(false)
+      setLivenessSessionId(null)
+    }
+  }
+
+  function handleLivenessError(err) {
+    setShowLiveness(false)
+    setLivenessSessionId(null)
+    setResult({ success: false, message: err?.toString() || 'Liveness check failed' })
+  }
+
+  if (showLiveness && livenessSessionId) {
+    return (
+      <div style={{
+        position: 'fixed', inset: 0, background: '#000', zIndex: 100,
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <LivenessChallenge
+          sessionId={livenessSessionId}
+          region={import.meta.env.VITE_AWS_REGION || 'ap-south-1'}
+          onComplete={handleLivenessComplete}
+          onError={handleLivenessError}
+        />
+        <button
+          onClick={() => { setShowLiveness(false); setLivenessSessionId(null) }}
+          style={{ marginTop: 16, color: '#fff', background: 'transparent', border: 'none', cursor: 'pointer' }}
+        >
+          Cancel
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="page">
       <h1>Enroll Visitor</h1>
-      <p className="subtitle">Register a visitor's face into the Rekognition collection.</p>
+      <p className="subtitle">Register a visitor's face into the Rekognition collection via liveness check.</p>
       <div className="card">
-        <form onSubmit={handleSubmit}>
+        <form onSubmit={handleStartLiveness}>
           <div className="field">
             <label>Tenant ID (UUID)</label>
             <input
@@ -49,14 +93,13 @@ export default function EnrollPage() {
               required
             />
           </div>
-          <ImagePicker onFile={setImageFile} />
           <button
             type="submit"
             className="btn-primary"
-            disabled={loading || !tenantId || !visitorId || !imageFile}
+            disabled={loading || !tenantId || !visitorId}
             style={{ width: '100%', marginTop: 8 }}
           >
-            {loading ? 'Enrolling…' : 'Enroll Face'}
+            {loading ? 'Starting…' : 'Start Liveness Check'}
           </button>
         </form>
         <ResultBox result={result} />

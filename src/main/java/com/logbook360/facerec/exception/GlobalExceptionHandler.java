@@ -49,6 +49,12 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error("Image file exceeds maximum allowed size of 10MB"));
     }
 
+    @ExceptionHandler(LivenessCheckFailedException.class)
+    public ResponseEntity<ApiResponse<Void>> handleLivenessCheckFailed(LivenessCheckFailedException ex) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .body(ApiResponse.error(ex.getMessage()));
+    }
+
     @ExceptionHandler(FaceRecognitionException.class)
     public ResponseEntity<ApiResponse<Void>> handleGeneral(FaceRecognitionException ex) {
         log.error("Face recognition error: {}", ex.getMessage(), ex);

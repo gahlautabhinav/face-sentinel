@@ -28,7 +28,9 @@ Create policy `logbook360-face-policy` in AWS IAM console:
     {
       "Effect": "Allow",
       "Action": [
-        "rekognition:DetectFaces"
+        "rekognition:DetectFaces",
+        "rekognition:CreateFaceLivenessSession",
+        "rekognition:GetFaceLivenessSessionResults"
       ],
       "Resource": "*"
     },
@@ -146,6 +148,32 @@ aws ecr create-repository \
 
 Run Flyway migration on first deploy — Spring Boot runs it automatically on startup.
 
+### Step 2b: Cognito Identity Pool (Face Liveness)
+
+The kiosk and enrollment UI uses AWS Amplify's `FaceLivenessDetector`, which needs temporary AWS credentials in the browser. Use a Cognito Identity Pool with unauthenticated access.
+
+1. **AWS Console → Cognito → Identity Pools → Create identity pool**
+   - Name: `logbook360-liveness-pool`
+   - Enable unauthenticated identities: **ON**
+   - Create pool → AWS auto-creates two IAM roles
+   - Note the **Identity Pool ID** (format: `ap-south-1:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`)
+
+2. **Restrict the unauthenticated IAM role** (`Cognito_logbook360livenessp​oolUnauth_Role`):
+   - IAM → Roles → find the unauth role → edit inline policy:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [{
+       "Effect": "Allow",
+       "Action": "rekognition:StartFaceLivenessSession",
+       "Resource": "*"
+     }]
+   }
+   ```
+   - Remove all other permissions — this role should have ONLY `StartFaceLivenessSession`.
+
+3. Add `VITE_COGNITO_IDENTITY_POOL_ID` to `frontend/.env.local` with the Identity Pool ID.
+
 ### Step 3: IAM Task Role
 
 Create IAM role `logbook360-face-task-role` with trust policy for ECS tasks:
@@ -202,6 +230,7 @@ Key settings:
     { "name": "REKOGNITION_MIN_FACE_COVERAGE", "value": "0.12" },
     { "name": "REKOGNITION_MAX_CENTER_OFFSET", "value": "0.22" },
     { "name": "FACE_LIVENESS_ENABLED", "value": "false" },
+    { "name": "REKOGNITION_LIVENESS_CONFIDENCE_THRESHOLD", "value": "80.0" },
     { "name": "JWT_EXPIRY_HOURS", "value": "24" },
     { "name": "ADMIN_CLIENT_ID", "value": "logbook360-admin" },
     { "name": "KIOSK_CLIENT_ID", "value": "logbook360-kiosk" }
@@ -298,3 +327,7 @@ Note: Actuator not yet added — add `spring-boot-starter-actuator` dependency w
 - [ ] ADMIN_CLIENT_SECRET and KIOSK_CLIENT_SECRET stored in Secrets Manager
 - [ ] All Phase 3 env vars present: JWT_SECRET, JWT_EXPIRY_HOURS, ADMIN_CLIENT_ID, ADMIN_CLIENT_SECRET, KIOSK_CLIENT_ID, KIOSK_CLIENT_SECRET
 - [ ] Similarity threshold at 92.0+ in production
+- [ ] Cognito Identity Pool created, unauth role restricted to `rekognition:StartFaceLivenessSession` only
+- [ ] `VITE_COGNITO_IDENTITY_POOL_ID` set in frontend environment
+- [ ] Liveness IAM permissions added to `logbook360-face-policy`: `CreateFaceLivenessSession`, `GetFaceLivenessSessionResults`
+- [ ] `REKOGNITION_LIVENESS_CONFIDENCE_THRESHOLD` set (80.0 default, raise for higher security)

@@ -92,6 +92,51 @@ public class FaceEnrollmentService {
             .build();
     }
 
+    @Transactional
+    public FaceEnrollResponse enrollFaceFromBytes(UUID tenantId, UUID visitorId, byte[] imageBytes) {
+        if (visitorFaceRepository.existsByVisitorIdAndTenantId(visitorId, tenantId)) {
+            throw new DuplicateEnrollmentException("Visitor already has an enrolled face. Delete first to re-enroll.");
+        }
+
+        DetectFacesResponse detectResponse = rekognitionService.detectFaces(imageBytes);
+        validateFaceDetection(detectResponse);
+
+        String s3Key = s3Service.buildVisitorImageKey(tenantId, visitorId);
+        s3Service.uploadImage(imageBytes, s3Key, "image/jpeg");
+
+        String collectionId = collectionPrefix + "-" + tenantId;
+        rekognitionService.createCollectionIfNotExists(collectionId);
+
+        IndexFacesResponse indexResponse = rekognitionService.indexFace(
+                collectionId, s3Bucket, s3Key, visitorId.toString());
+
+        if (indexResponse.faceRecords().isEmpty()) {
+            throw new FaceRecognitionException("Rekognition indexed 0 faces — liveness image quality too low");
+        }
+
+        FaceRecord faceRecord = indexResponse.faceRecords().get(0);
+        String rekognitionFaceId = faceRecord.face().faceId();
+        double confidence = faceRecord.face().confidence();
+
+        VisitorFace visitorFace = new VisitorFace();
+        visitorFace.setVisitorId(visitorId);
+        visitorFace.setTenantId(tenantId);
+        visitorFace.setRekognitionFaceId(rekognitionFaceId);
+        visitorFace.setS3ImageKey(s3Key);
+        visitorFace.setConfidence(confidence);
+        visitorFaceRepository.save(visitorFace);
+
+        saveLog(tenantId, visitorId, RecognitionLog.RecognitionAction.ENROLL,
+                RecognitionLog.RecognitionStatus.SUCCESS, null, s3Key, null);
+
+        return FaceEnrollResponse.builder()
+                .visitorId(visitorId)
+                .rekognitionFaceId(rekognitionFaceId)
+                .confidence(confidence)
+                .message("Face enrolled successfully via liveness")
+                .build();
+    }
+
     private void validateImageFile(MultipartFile file) {
         if (file == null || file.isEmpty()) {
             throw new InvalidImageException("Image file is required and must not be empty");

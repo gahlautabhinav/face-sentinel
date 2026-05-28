@@ -62,4 +62,16 @@ public class RekognitionService {
                 .build());
         log.info("Deleted face {} from collection {}", faceId, collectionId);
     }
+
+    public CreateFaceLivenessSessionResponse createFaceLivenessSession() {
+        return rekognitionClient.createFaceLivenessSession(
+                CreateFaceLivenessSessionRequest.builder().build());
+    }
+
+    public GetFaceLivenessSessionResultsResponse getFaceLivenessSessionResults(String sessionId) {
+        return rekognitionClient.getFaceLivenessSessionResults(
+                GetFaceLivenessSessionResultsRequest.builder()
+                        .sessionId(sessionId)
+                        .build());
+    }
 }
