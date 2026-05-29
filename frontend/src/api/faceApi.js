@@ -78,11 +78,11 @@ export async function getLivenessResult(sessionId, role = 'KIOSK') {
   return res.json()
 }
 
-export async function enrollLive({ tenantId, visitorId, sessionId }) {
+export async function enrollLive({ tenantId, sessionId, visitorName, email, mobile }) {
   const res = await authFetch('ADMIN', '/api/face/enroll-live', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Tenant-Id': tenantId },
-    body: JSON.stringify({ visitorId, sessionId }),
+    body: JSON.stringify({ sessionId, visitorName, email, mobile }),
   })
   return res.json()
 }

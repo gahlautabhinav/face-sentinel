@@ -60,7 +60,8 @@ public class FaceController {
             @RequestHeader("X-Tenant-Id") UUID tenantId,
             @RequestBody @Valid LivenessEnrollRequest request) {
         FaceEnrollResponse response = livenessService.enrollFromSession(
-                tenantId, request.getVisitorId(), request.getSessionId());
+                tenantId, request.getSessionId(),
+                request.getVisitorName(), request.getEmail(), request.getMobile());
         return ResponseEntity.ok(ApiResponse.success(response, response.getMessage()));
     }
 

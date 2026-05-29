@@ -73,7 +73,7 @@ class LivenessServiceTest {
                         .status(LivenessSessionStatus.SUCCEEDED)
                         .build());
 
-        assertThatThrownBy(() -> service.enrollFromSession(UUID.randomUUID(), UUID.randomUUID(), "sess-3"))
+        assertThatThrownBy(() -> service.enrollFromSession(UUID.randomUUID(), "sess-3", "Test User", null, null))
                 .isInstanceOf(LivenessCheckFailedException.class)
                 .hasMessageContaining("Liveness confidence");
     }
@@ -101,9 +101,10 @@ class LivenessServiceTest {
                 .confidence(99.0)
                 .message("Face enrolled successfully via liveness")
                 .build();
-        when(enrollmentService.enrollFaceFromBytes(tenantId, visitorId, fakeBytes)).thenReturn(expected);
+        when(enrollmentService.enrollFaceFromBytes(eq(tenantId), eq(fakeBytes), eq("John Doe"), isNull(), isNull()))
+                .thenReturn(expected);
 
-        FaceEnrollResponse result = service.enrollFromSession(tenantId, visitorId, "sess-4");
+        FaceEnrollResponse result = service.enrollFromSession(tenantId, "sess-4", "John Doe", null, null);
         assertThat(result.getMessage()).contains("liveness");
     }
 }

@@ -9,6 +9,7 @@ import com.logbook360.facerec.service.FaceDeletionService;
 import com.logbook360.facerec.service.FaceEnrollmentService;
 import com.logbook360.facerec.service.FaceIdentificationService;
 import com.logbook360.facerec.service.FaceVerificationService;
+import com.logbook360.facerec.service.LivenessService;
 import com.logbook360.facerec.config.SecurityConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,6 +38,7 @@ class FaceControllerTest {
     @MockBean private FaceIdentificationService identificationService;
     @MockBean private FaceDeletionService deletionService;
     @MockBean private FaceVerificationService verificationService;
+    @MockBean private LivenessService livenessService;
     @MockBean private JwtService jwtService;
 
     @Test

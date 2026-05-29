@@ -1,11 +1,15 @@
 package com.logbook360.facerec.service;
 
 import com.logbook360.facerec.domain.RecognitionLog;
+import com.logbook360.facerec.domain.Tenant;
+import com.logbook360.facerec.domain.Visitor;
 import com.logbook360.facerec.domain.VisitorFace;
 import com.logbook360.facerec.dto.response.FaceEnrollResponse;
 import com.logbook360.facerec.exception.*;
 import com.logbook360.facerec.repository.RecognitionLogRepository;
+import com.logbook360.facerec.repository.TenantRepository;
 import com.logbook360.facerec.repository.VisitorFaceRepository;
+import com.logbook360.facerec.repository.VisitorRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -25,6 +29,8 @@ public class FaceEnrollmentService {
     private final S3Service s3Service;
     private final VisitorFaceRepository visitorFaceRepository;
     private final RecognitionLogRepository recognitionLogRepository;
+    private final TenantRepository tenantRepository;
+    private final VisitorRepository visitorRepository;
     private final String collectionPrefix;
     private final String s3Bucket;
 
@@ -33,12 +39,16 @@ public class FaceEnrollmentService {
             S3Service s3Service,
             VisitorFaceRepository visitorFaceRepository,
             RecognitionLogRepository recognitionLogRepository,
+            TenantRepository tenantRepository,
+            VisitorRepository visitorRepository,
             @Value("${aws.rekognition.collection-prefix}") String collectionPrefix,
             @Value("${aws.s3.bucket-name}") String s3Bucket) {
         this.rekognitionService = rekognitionService;
         this.s3Service = s3Service;
         this.visitorFaceRepository = visitorFaceRepository;
         this.recognitionLogRepository = recognitionLogRepository;
+        this.tenantRepository = tenantRepository;
+        this.visitorRepository = visitorRepository;
         this.collectionPrefix = collectionPrefix;
         this.s3Bucket = s3Bucket;
     }
@@ -93,10 +103,25 @@ public class FaceEnrollmentService {
     }
 
     @Transactional
-    public FaceEnrollResponse enrollFaceFromBytes(UUID tenantId, UUID visitorId, byte[] imageBytes) {
-        if (visitorFaceRepository.existsByVisitorIdAndTenantId(visitorId, tenantId)) {
-            throw new DuplicateEnrollmentException("Visitor already has an enrolled face. Delete first to re-enroll.");
+    public FaceEnrollResponse enrollFaceFromBytes(UUID tenantId, byte[] imageBytes,
+                                                  String visitorName, String email, String mobile) {
+        // Auto-create tenant row if it doesn't exist yet
+        if (!tenantRepository.existsById(tenantId)) {
+            Tenant tenant = new Tenant();
+            tenant.setId(tenantId);
+            tenant.setName("LogBook360");
+            tenant.setRekognitionCollectionId(collectionPrefix + "-" + tenantId);
+            tenantRepository.save(tenant);
         }
+
+        // Create visitor record — DB generates the UUID
+        Visitor visitor = new Visitor();
+        visitor.setTenantId(tenantId);
+        visitor.setName(visitorName);
+        visitor.setEmail(email);
+        visitor.setPhone(mobile);
+        visitor = visitorRepository.saveAndFlush(visitor);
+        UUID visitorId = java.util.Objects.requireNonNull(visitor.getId(), "Visitor ID not generated after save");
 
         DetectFacesResponse detectResponse = rekognitionService.detectFaces(imageBytes);
         validateFaceDetection(detectResponse);

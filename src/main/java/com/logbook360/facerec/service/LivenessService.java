@@ -44,7 +44,8 @@ public class LivenessService {
                 .build();
     }
 
-    public FaceEnrollResponse enrollFromSession(UUID tenantId, UUID visitorId, String sessionId) {
+    public FaceEnrollResponse enrollFromSession(UUID tenantId, String sessionId,
+                                                String visitorName, String email, String mobile) {
         GetFaceLivenessSessionResultsResponse response =
                 rekognitionService.getFaceLivenessSessionResults(sessionId);
 
@@ -55,6 +56,6 @@ public class LivenessService {
         }
 
         byte[] imageBytes = response.referenceImage().bytes().asByteArray();
-        return enrollmentService.enrollFaceFromBytes(tenantId, visitorId, imageBytes);
+        return enrollmentService.enrollFaceFromBytes(tenantId, imageBytes, visitorName, email, mobile);
     }
 }
