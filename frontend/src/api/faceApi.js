@@ -65,3 +65,24 @@ export async function deleteFace({ tenantId, visitorId }) {
   })
   return res.json()
 }
+
+export async function createLivenessSession(role = 'KIOSK') {
+  const res = await authFetch(role, '/api/liveness/session', { method: 'POST' })
+  if (!res.ok) throw new Error(`Liveness session failed: HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function getLivenessResult(sessionId, role = 'KIOSK') {
+  const res = await authFetch(role, `/api/liveness/session/${sessionId}/result`)
+  if (!res.ok) throw new Error(`Liveness result failed: HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function enrollLive({ tenantId, sessionId, visitorName, email, mobile }) {
+  const res = await authFetch('ADMIN', '/api/face/enroll-live', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Tenant-Id': tenantId },
+    body: JSON.stringify({ sessionId, visitorName, email, mobile }),
+  })
+  return res.json()
+}

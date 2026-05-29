@@ -38,6 +38,9 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.DELETE, "/api/face/**").hasRole("ADMIN")
                 .requestMatchers(HttpMethod.POST, "/api/face/identify").hasRole("KIOSK")
                 .requestMatchers(HttpMethod.POST, "/api/face/verify").hasRole("KIOSK")
+                .requestMatchers(HttpMethod.POST, "/api/liveness/session").hasAnyRole("ADMIN", "KIOSK")
+                .requestMatchers(HttpMethod.GET, "/api/liveness/session/**").hasAnyRole("ADMIN", "KIOSK")
+                .requestMatchers(HttpMethod.POST, "/api/face/enroll-live").hasRole("ADMIN")
                 .anyRequest().authenticated()
             )
             .exceptionHandling(ex -> ex

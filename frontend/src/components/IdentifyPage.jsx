@@ -27,18 +27,31 @@ export default function IdentifyPage() {
   const matched = result?.data?.matched
   const matchBadge = result?.data
     ? matched
-      ? <span className="badge green">✓ MATCHED</span>
-      : <span className="badge red">✗ NO MATCH</span>
+      ? <span className="badge green">
+          <svg width="9" height="9" viewBox="0 0 9 9" fill="none">
+            <path d="M1.5 4.5l2 2 4-4" stroke="#4ade80" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          MATCHED
+        </span>
+      : <span className="badge red">
+          <svg width="9" height="9" viewBox="0 0 9 9" fill="none">
+            <path d="M2 2l5 5M7 2L2 7" stroke="#f87171" strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+          NO MATCH
+        </span>
     : null
 
   return (
     <div className="page">
-      <h1>Identify Visitor {matchBadge}</h1>
-      <p className="subtitle">Search Rekognition for a matching face. Simulates kiosk flow.</p>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+        <div className="page-title" style={{ margin: 0 }}>Identify Visitor</div>
+        {matchBadge}
+      </div>
+      <div className="page-sub">Search Rekognition collection for a matching face. Admin testing tool.</div>
       <div className="card">
         <form onSubmit={handleSubmit}>
           <div className="field">
-            <label>Tenant ID (UUID)</label>
+            <label>Tenant ID</label>
             <input
               value={tenantId}
               onChange={e => setTenantId(e.target.value)}
@@ -53,7 +66,16 @@ export default function IdentifyPage() {
             disabled={loading || !tenantId || !imageFile}
             style={{ width: '100%', marginTop: 8 }}
           >
-            {loading ? 'Identifying…' : 'Identify Face'}
+            {loading
+              ? <><div className="spinner" /><span>Identifying…</span></>
+              : <>
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <circle cx="7" cy="5" r="3" stroke="currentColor" strokeWidth="1.5"/>
+                    <path d="M1.5 12.5c0-3.038 2.462-5.5 5.5-5.5s5.5 2.462 5.5 5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                  </svg>
+                  Identify Face
+                </>
+            }
           </button>
         </form>
         <ResultBox result={result} />
