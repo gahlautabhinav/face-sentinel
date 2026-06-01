@@ -184,23 +184,28 @@ export default function KioskPage() {
       h: 260,
     }
     const faceFound = !!faceBox
-    const color = faceFound ? 'rgba(59,130,246,0.85)' : 'rgba(59,130,246,0.4)'
+    const color = faceFound ? '#3b82f6' : 'rgba(255,255,255,0.7)'
+    const glow = faceFound
+      ? '0 0 10px rgba(59,130,246,0.8), 0 0 20px rgba(59,130,246,0.4)'
+      : '0 0 8px rgba(255,255,255,0.3)'
     const pad = 14
     const bx = box.x - pad
     const by = box.y - pad
     const bw = box.w + pad * 2
     const bh = box.h + pad * 2
+    const B = '4px'
     const corners = [
-      { top: by,          left: bx,          borderTop: `3px solid ${color}`, borderLeft:  `3px solid ${color}`, borderRadius: '6px 0 0 0' },
-      { top: by,          left: bx + bw - 44, borderTop: `3px solid ${color}`, borderRight: `3px solid ${color}`, borderRadius: '0 6px 0 0' },
-      { top: by + bh - 44, left: bx,          borderBottom: `3px solid ${color}`, borderLeft:  `3px solid ${color}`, borderRadius: '0 0 0 6px' },
-      { top: by + bh - 44, left: bx + bw - 44, borderBottom: `3px solid ${color}`, borderRight: `3px solid ${color}`, borderRadius: '0 0 6px 0' },
+      { top: by,           left: bx,           borderTop: `${B} solid ${color}`, borderLeft:  `${B} solid ${color}`, borderRadius: '6px 0 0 0' },
+      { top: by,           left: bx + bw - 48, borderTop: `${B} solid ${color}`, borderRight: `${B} solid ${color}`, borderRadius: '0 6px 0 0' },
+      { top: by + bh - 48, left: bx,           borderBottom: `${B} solid ${color}`, borderLeft:  `${B} solid ${color}`, borderRadius: '0 0 0 6px' },
+      { top: by + bh - 48, left: bx + bw - 48, borderBottom: `${B} solid ${color}`, borderRight: `${B} solid ${color}`, borderRadius: '0 0 6px 0' },
     ]
     return corners.map((s, i) => (
       <div key={i} style={{
-        position: 'absolute', width: 44, height: 44,
-        transition: 'top 0.1s ease-out, left 0.1s ease-out, width 0.1s ease-out, height 0.1s ease-out',
+        position: 'absolute', width: 48, height: 48,
+        transition: 'top 0.1s ease-out, left 0.1s ease-out',
         animation: faceFound ? 'none' : 'pulse-ring 1.5s ease-out infinite',
+        boxShadow: glow,
         pointerEvents: 'none',
         zIndex: 15,
         ...s,
