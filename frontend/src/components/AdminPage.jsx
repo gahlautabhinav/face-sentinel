@@ -78,7 +78,7 @@ export default function AdminPage() {
   const hasTenant = !!tenantId
 
   return (
-    <div className="page" style={{ maxWidth: 900 }}>
+    <div className="page" style={{ maxWidth: 1100 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 8 }}>
         <div>
           <div className="page-title">Enrollments</div>
@@ -167,13 +167,20 @@ export default function AdminPage() {
           ) : rows.length === 0 ? (
             <EmptyState />
           ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+                <colgroup>
+                  <col style={{ width: '32%' }} />
+                  <col style={{ width: '26%' }} />
+                  <col style={{ width: '16%' }} />
+                  <col style={{ width: '17%' }} />
+                  <col style={{ width: '9%' }} />
+                </colgroup>
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--border)' }}>
                     {['Visitor', 'Contact', 'Confidence', 'Enrolled', 'Action'].map(h => (
                       <th key={h} style={{
-                        padding: '12px 20px', textAlign: 'left',
+                        padding: '12px 16px', textAlign: 'left',
                         fontFamily: "'Syne', sans-serif", fontSize: 10.5, fontWeight: 700,
                         color: 'var(--text-3)', letterSpacing: 1, textTransform: 'uppercase',
                         whiteSpace: 'nowrap',
@@ -209,7 +216,7 @@ export default function AdminPage() {
 function TableRow({ row, isLast, isConfirm, isDeleting, onDeleteClick, onConfirm, onCancel }) {
   const [fg, bg] = avatarColor(row.name)
   const tdStyle = {
-    padding: '14px 20px',
+    padding: '14px 16px',
     borderBottom: isLast ? 'none' : '1px solid var(--border)',
     verticalAlign: 'middle',
     background: isConfirm ? 'rgba(244,63,94,0.04)' : 'transparent',
@@ -235,8 +242,8 @@ function TableRow({ row, isLast, isConfirm, isDeleting, onDeleteClick, onConfirm
             </div>
             <div style={{
               fontFamily: "'JetBrains Mono', monospace",
-              fontSize: 10.5, color: 'var(--text-3)', marginTop: 2,
-              maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              fontSize: 10, color: 'var(--text-3)', marginTop: 2,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}>
               {row.visitorId}
             </div>
