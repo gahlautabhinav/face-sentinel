@@ -1,259 +1,122 @@
 import { useState } from 'react'
-import { QRCodeCanvas } from 'qrcode.react'
-import ResultBox from './ResultBox.jsx'
-import LivenessChallenge from './LivenessChallenge.jsx'
-import { createLivenessSession, enrollLive } from '../api/faceApi.js'
-
-const STEP_ORDER = ['details', 'liveness', 'complete']
-const STEP_LABELS = { details: 'Details', liveness: 'Liveness', complete: 'Complete' }
-
-function StepBar({ step }) {
-  const currentIdx = STEP_ORDER.indexOf(step)
-  return (
-    <div className="steps">
-      {STEP_ORDER.map((id, i) => {
-        const isDone = i < currentIdx
-        const isActive = i === currentIdx
-        return (
-          <div key={id} className={`step${isDone ? ' done' : isActive ? ' active' : ''}`}>
-            <div className="step-dot">
-              {isDone
-                ? <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                    <path d="M3 7l3 3 5-5" stroke="#4ade80" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                : i + 1
-              }
-            </div>
-            <div className="step-label">{STEP_LABELS[id]}</div>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function getOrgTenantId() {
-  if (import.meta.env.VITE_TENANT_ID) return import.meta.env.VITE_TENANT_ID
-  const stored = localStorage.getItem('lbfr_tenant_id')
-  if (stored) return stored
-  const id = crypto.randomUUID()
-  localStorage.setItem('lbfr_tenant_id', id)
-  return id
-}
-
-function uuidToBase64url(uuid) {
-  const hex = uuid.replace(/-/g, '')
-  const bytes = new Uint8Array(16)
-  for (let i = 0; i < 16; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
-}
 
 export default function EnrollPage() {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [mobile, setMobile] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState(null)
-  const [livenessSessionId, setLivenessSessionId] = useState(null)
-  const [showLiveness, setShowLiveness] = useState(false)
-  const [step, setStep] = useState('details')
-  const [enrolledData, setEnrolledData] = useState(null)
+  const [link, setLink] = useState(null)
+  const [copied, setCopied] = useState(false)
 
-  async function handleStartLiveness(e) {
+  function handleGenerate(e) {
     e.preventDefault()
     if (!name.trim()) return
-    setLoading(true)
-    setResult(null)
-    try {
-      const res = await createLivenessSession('ADMIN')
-      setLivenessSessionId(res.data.sessionId)
-      setShowLiveness(true)
-      setStep('liveness')
-    } catch {
-      setResult({ success: false, message: 'Failed to start liveness check. Try again.' })
-    } finally {
-      setLoading(false)
-    }
+    const params = new URLSearchParams({ name: name.trim(), email: email.trim(), mobile: mobile.trim() })
+    setLink(`${window.location.origin}/register?${params}`)
+    setCopied(false)
   }
 
-  async function handleLivenessComplete() {
-    setShowLiveness(false)
-    setLoading(true)
-    const tenantId = getOrgTenantId()
-    try {
-      const data = await enrollLive({
-        tenantId,
-        sessionId: livenessSessionId,
-        visitorName: name.trim(),
-        email: email.trim(),
-        mobile: mobile.trim(),
-      })
-      setResult(data)
-      if (data.success !== false) {
-        setEnrolledData({
-          tenantId,
-          visitorId: data.data?.visitorId,
-          name: name.trim(),
-          email: email.trim(),
-          mobile: mobile.trim(),
-        })
-        setStep('complete')
-      } else {
-        setStep('details')
-      }
-    } catch (err) {
-      setResult({ success: false, message: err.message })
-      setStep('details')
-    } finally {
-      setLoading(false)
-      setLivenessSessionId(null)
-    }
-  }
-
-  function handleLivenessError() {
-    setShowLiveness(false)
-    setLivenessSessionId(null)
-    setStep('details')
-    setResult({ success: false, message: 'Liveness check failed — please try again.' })
+  async function handleCopy() {
+    await navigator.clipboard.writeText(link)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
   }
 
   function handleReset() {
-    setStep('details')
-    setResult(null)
     setName('')
     setEmail('')
     setMobile('')
-    setEnrolledData(null)
-  }
-
-  function downloadQR() {
-    const canvas = document.getElementById('enrollment-qr')
-    if (!canvas) return
-    const url = canvas.toDataURL('image/png')
-    const a = document.createElement('a')
-    a.download = `visitor-qr-${enrolledData.visitorId.slice(0, 8)}.png`
-    a.href = url
-    a.click()
-  }
-
-  if (showLiveness && livenessSessionId) {
-    return (
-      <div style={{ position: 'fixed', inset: 0, zIndex: 100, background: '#080e1a', display: 'flex', flexDirection: 'column' }}>
-        <div style={{
-          padding: '18px 24px',
-          borderBottom: '1px solid rgba(255,255,255,0.06)',
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        }}>
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 700, color: '#e8edf5' }}>Liveness Check</div>
-            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>
-              Follow the oval with your face
-            </div>
-          </div>
-          <button
-            onClick={() => { setShowLiveness(false); setLivenessSessionId(null); setStep('details') }}
-            style={{
-              background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
-              color: 'rgba(255,255,255,0.5)', borderRadius: 8, padding: '7px 16px',
-              fontSize: 13, cursor: 'pointer',
-            }}
-          >
-            Cancel
-          </button>
-        </div>
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <LivenessChallenge
-            sessionId={livenessSessionId}
-            region={import.meta.env.VITE_AWS_REGION || 'ap-south-1'}
-            onComplete={handleLivenessComplete}
-            onError={handleLivenessError}
-          />
-        </div>
-      </div>
-    )
+    setLink(null)
+    setCopied(false)
   }
 
   return (
     <div className="page">
       <div className="page-title">Enroll Visitor</div>
-      <div className="page-sub">Enter visitor details. IDs are auto-generated. Complete liveness check to register face and get QR code.</div>
-
-      <StepBar step={step} />
+      <div className="page-sub">Enter visitor details to generate a registration link. Send the link to the visitor to complete their photo capture.</div>
 
       <div className="card">
-        {step === 'complete' && enrolledData ? (
+        {link ? (
           <div>
-            {/* Success header */}
-            <div style={{ textAlign: 'center', paddingBottom: 24, borderBottom: '1px solid rgba(255,255,255,0.06)', marginBottom: 0 }}>
+            <div style={{ textAlign: 'center', marginBottom: 24 }}>
               <div style={{
                 width: 52, height: 52, borderRadius: '50%',
                 background: 'rgba(22,163,74,0.12)',
                 border: '2px solid rgba(22,163,74,0.35)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 margin: '0 auto 12px',
-                animation: 'scaleIn 0.25s ease-out',
               }}>
                 <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
                   <path d="M4 11l5 5 9-9" stroke="#4ade80" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
               </div>
-              <div style={{ fontSize: 17, fontWeight: 700, color: '#4ade80', marginBottom: 2 }}>Enrolled Successfully</div>
-              <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.38)' }}>{enrolledData.name}</div>
+              <div style={{ fontSize: 17, fontWeight: 700, color: '#4ade80', marginBottom: 2 }}>Link Generated</div>
+              <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.38)' }}>{name.trim()}</div>
             </div>
 
-            {/* QR code */}
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px 0', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-              <div style={{ background: '#fff', borderRadius: 12, padding: 14, marginBottom: 14 }}>
-                <QRCodeCanvas
-                  id="enrollment-qr"
-                  value={JSON.stringify({ v: uuidToBase64url(enrolledData.visitorId) })}
-                  size={200}
-                  level="L"
-                  marginSize={4}
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                Registration Link
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+                <input
+                  readOnly
+                  value={link}
+                  style={{
+                    flex: 1, background: 'rgba(255,255,255,0.04)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    borderRadius: 8, padding: '10px 12px',
+                    fontSize: 12, color: 'rgba(255,255,255,0.55)',
+                    fontFamily: 'monospace', overflow: 'hidden',
+                    textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}
+                  onClick={e => e.target.select()}
                 />
+                <button
+                  onClick={handleCopy}
+                  style={{
+                    padding: '10px 16px',
+                    background: copied ? 'rgba(22,163,74,0.15)' : 'rgba(37,99,235,0.15)',
+                    border: `1px solid ${copied ? 'rgba(22,163,74,0.3)' : 'rgba(37,99,235,0.3)'}`,
+                    color: copied ? '#4ade80' : '#93c5fd',
+                    borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                    whiteSpace: 'nowrap', transition: 'all 0.15s',
+                    display: 'flex', alignItems: 'center', gap: 6,
+                  }}
+                >
+                  {copied ? (
+                    <>
+                      <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                        <path d="M2 6.5l3.5 3.5 5.5-6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                      Copied
+                    </>
+                  ) : (
+                    <>
+                      <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                        <rect x="4.5" y="4.5" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
+                        <path d="M8.5 4.5V3a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v4.5a1 1 0 0 0 1 1H4.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                      </svg>
+                      Copy
+                    </>
+                  )}
+                </button>
               </div>
-              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.3)', marginBottom: 14, textAlign: 'center' }}>
-                Visitor scans this QR at the kiosk
-              </div>
-              <button
-                onClick={downloadQR}
-                style={{
-                  background: 'rgba(37,99,235,0.12)', border: '1px solid rgba(37,99,235,0.25)',
-                  color: '#93c5fd', borderRadius: 8, padding: '8px 20px',
-                  fontSize: 13, fontWeight: 600, cursor: 'pointer',
-                  display: 'inline-flex', alignItems: 'center', gap: 6,
-                }}
-              >
-                <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-                  <path d="M6.5 1v7M4 6l2.5 2.5L9 6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-                  <path d="M1.5 10v1a.5.5 0 0 0 .5.5h10a.5.5 0 0 0 .5-.5v-1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-                </svg>
-                Download QR
-              </button>
             </div>
 
-            {/* Visitor details */}
-            <div style={{ padding: '16px 0 8px' }}>
-              {[
-                { label: 'Name',       value: enrolledData.name },
-                { label: 'Email',      value: enrolledData.email  || '—' },
-                { label: 'Mobile',     value: enrolledData.mobile || '—' },
-                { label: 'Visitor ID', value: enrolledData.visitorId },
-                { label: 'Tenant ID',  value: enrolledData.tenantId },
-              ].map(row => (
-                <div key={row.label} className="result-row">
-                  <span className="result-row-label">{row.label}</span>
-                  <span className="result-row-value">{row.value}</span>
-                </div>
-              ))}
+            <div style={{
+              background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.12)',
+              borderRadius: 8, padding: '10px 14px', marginBottom: 20,
+              fontSize: 12, color: 'rgba(255,255,255,0.38)', lineHeight: 1.6,
+            }}>
+              Send this link to <strong style={{ color: 'rgba(255,255,255,0.6)' }}>{name.trim()}</strong> via WhatsApp, email, or SMS. They'll complete their photo registration on their own device.
             </div>
 
-            <button className="btn-primary" onClick={handleReset} style={{ width: '100%', marginTop: 16 }}>
-              Enroll Another Visitor
+            <button className="btn-primary" onClick={handleReset} style={{ width: '100%' }}>
+              Generate for Another Visitor
             </button>
           </div>
         ) : (
-          <form onSubmit={handleStartLiveness}>
+          <form onSubmit={handleGenerate}>
             <div className="field">
               <label>
                 Full Name
@@ -285,32 +148,17 @@ export default function EnrollPage() {
               />
             </div>
 
-            <div style={{
-              background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.12)',
-              borderRadius: 8, padding: '10px 14px', marginBottom: 18,
-              fontSize: 12, color: 'rgba(255,255,255,0.35)', lineHeight: 1.6,
-            }}>
-              Visitor ID and Tenant ID are auto-generated after successful enrollment.
-            </div>
-
             <button
               type="submit"
               className="btn-primary"
-              disabled={loading || !name.trim()}
+              disabled={!name.trim()}
               style={{ width: '100%' }}
             >
-              {loading
-                ? <><div className="spinner" /><span>Starting…</span></>
-                : <>
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                      <circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.5"/>
-                      <circle cx="7" cy="7" r="2.5" fill="currentColor"/>
-                    </svg>
-                    Start Liveness Check
-                  </>
-              }
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M2 7h10M7 2l5 5-5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              Generate Link
             </button>
-            {result && <ResultBox result={result} />}
           </form>
         )}
       </div>

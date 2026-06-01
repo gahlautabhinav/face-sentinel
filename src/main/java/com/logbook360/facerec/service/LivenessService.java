@@ -1,6 +1,7 @@
 package com.logbook360.facerec.service;
 
 import com.logbook360.facerec.dto.response.FaceEnrollResponse;
+import com.logbook360.facerec.dto.response.FaceIdentifyResponse;
 import com.logbook360.facerec.dto.response.LivenessResultResponse;
 import com.logbook360.facerec.dto.response.LivenessSessionResponse;
 import com.logbook360.facerec.exception.LivenessCheckFailedException;
@@ -17,14 +18,17 @@ public class LivenessService {
 
     private final RekognitionService rekognitionService;
     private final FaceEnrollmentService enrollmentService;
+    private final FaceIdentificationService identificationService;
     private final float confidenceThreshold;
 
     public LivenessService(
             RekognitionService rekognitionService,
             FaceEnrollmentService enrollmentService,
+            FaceIdentificationService identificationService,
             @Value("${aws.rekognition.liveness-confidence-threshold:80.0}") float confidenceThreshold) {
         this.rekognitionService = rekognitionService;
         this.enrollmentService = enrollmentService;
+        this.identificationService = identificationService;
         this.confidenceThreshold = confidenceThreshold;
     }
 
@@ -42,6 +46,18 @@ public class LivenessService {
                 .passed(passed)
                 .confidence(response.confidence())
                 .build();
+    }
+
+    public FaceIdentifyResponse identifyFromSession(UUID tenantId, String sessionId) {
+        GetFaceLivenessSessionResultsResponse response =
+                rekognitionService.getFaceLivenessSessionResults(sessionId);
+        if (response.confidence() < confidenceThreshold) {
+            throw new LivenessCheckFailedException(
+                    String.format("Liveness confidence %.1f%% below threshold %.1f%%",
+                            response.confidence(), confidenceThreshold));
+        }
+        byte[] imageBytes = response.referenceImage().bytes().asByteArray();
+        return identificationService.identifyFaceFromBytes(tenantId, imageBytes);
     }
 
     public FaceEnrollResponse enrollFromSession(UUID tenantId, String sessionId,

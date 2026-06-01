@@ -86,3 +86,13 @@ export async function enrollLive({ tenantId, sessionId, visitorName, email, mobi
   })
   return res.json()
 }
+
+export async function identifyLive({ tenantId, sessionId }) {
+  const res = await authFetch('KIOSK', '/api/liveness/identify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Tenant-Id': tenantId },
+    body: JSON.stringify({ sessionId }),
+  })
+  if (!res.ok) throw new Error(`Identify failed: HTTP ${res.status}`)
+  return res.json()
+}
