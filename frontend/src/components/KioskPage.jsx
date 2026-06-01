@@ -15,6 +15,8 @@ export default function KioskPage() {
   const videoRef = useRef(null)
   const streamRef = useRef(null)
   const countdownRef = useRef(null)
+  const faceDetectorRef = useRef(null)
+  const rafRef = useRef(null)
 
   const [phase, setPhase] = useState('idle')
   const [countdown, setCountdown] = useState(COUNTDOWN_START)
@@ -23,7 +25,9 @@ export default function KioskPage() {
   const [livenessError, setLivenessError] = useState(null)
   const [result, setResult] = useState(null)
   const [identifying, setIdentifying] = useState(false)
+  const [faceBox, setFaceBox] = useState(null)
 
+  // Camera + FaceDetector init
   useEffect(() => {
     navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 1280, height: 720 } })
       .then(stream => {
@@ -31,11 +35,16 @@ export default function KioskPage() {
         if (videoRef.current) videoRef.current.srcObject = stream
       })
       .catch(() => {})
+    if ('FaceDetector' in window) {
+      faceDetectorRef.current = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 1 })
+    }
     return () => {
       if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop())
+      cancelAnimationFrame(rafRef.current)
     }
   }, [])
 
+  // Countdown auto-start in idle
   useEffect(() => {
     if (phase !== 'idle') return
     setCountdown(COUNTDOWN_START)
@@ -49,6 +58,60 @@ export default function KioskPage() {
       }
     }, 1000)
     return () => clearInterval(countdownRef.current)
+  }, [phase])
+
+  // Face tracking loop — idle phase only
+  useEffect(() => {
+    if (phase !== 'idle') {
+      cancelAnimationFrame(rafRef.current)
+      return
+    }
+    if (!faceDetectorRef.current) return
+
+    let current = null
+
+    async function tick() {
+      const video = videoRef.current
+      if (video && video.readyState >= 2) {
+        try {
+          const faces = await faceDetectorRef.current.detect(video)
+          if (faces.length > 0) {
+            const b = faces[0].boundingBox
+            const vw = video.videoWidth, vh = video.videoHeight
+            const sw = window.innerWidth, sh = window.innerHeight
+            const videoAspect = vw / vh
+            const screenAspect = sw / sh
+            let scale, ox, oy
+            if (videoAspect > screenAspect) {
+              scale = sh / vh; ox = (sw - vw * scale) / 2; oy = 0
+            } else {
+              scale = sw / vw; ox = 0; oy = (sh - vh * scale) / 2
+            }
+            const target = {
+              x: b.x * scale + ox,
+              y: b.y * scale + oy,
+              w: b.width * scale,
+              h: b.height * scale,
+            }
+            if (!current) current = target
+            const alpha = 0.2
+            current = {
+              x: current.x + (target.x - current.x) * alpha,
+              y: current.y + (target.y - current.y) * alpha,
+              w: current.w + (target.w - current.w) * alpha,
+              h: current.h + (target.h - current.h) * alpha,
+            }
+            setFaceBox({ ...current })
+          } else {
+            current = null
+            setFaceBox(null)
+          }
+        } catch { /* ignore */ }
+      }
+      rafRef.current = requestAnimationFrame(tick)
+    }
+    rafRef.current = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(rafRef.current)
   }, [phase])
 
   async function startScan() {
@@ -101,6 +164,7 @@ export default function KioskPage() {
 
   function handleReset() {
     clearInterval(countdownRef.current)
+    cancelAnimationFrame(rafRef.current)
     setPhase('idle')
     setCountdown(COUNTDOWN_START)
     setLivenessSessionId(null)
@@ -108,6 +172,40 @@ export default function KioskPage() {
     setLivenessError(null)
     setResult(null)
     setIdentifying(false)
+    setFaceBox(null)
+  }
+
+  // Corner brackets for idle overlay
+  function renderCornerBrackets() {
+    const box = faceBox ?? {
+      x: window.innerWidth / 2 - 100,
+      y: window.innerHeight / 2 - 155,
+      w: 200,
+      h: 260,
+    }
+    const faceFound = !!faceBox
+    const color = faceFound ? 'rgba(59,130,246,0.85)' : 'rgba(59,130,246,0.4)'
+    const pad = 14
+    const bx = box.x - pad
+    const by = box.y - pad
+    const bw = box.w + pad * 2
+    const bh = box.h + pad * 2
+    const corners = [
+      { top: by,          left: bx,          borderTop: `3px solid ${color}`, borderLeft:  `3px solid ${color}`, borderRadius: '6px 0 0 0' },
+      { top: by,          left: bx + bw - 44, borderTop: `3px solid ${color}`, borderRight: `3px solid ${color}`, borderRadius: '0 6px 0 0' },
+      { top: by + bh - 44, left: bx,          borderBottom: `3px solid ${color}`, borderLeft:  `3px solid ${color}`, borderRadius: '0 0 0 6px' },
+      { top: by + bh - 44, left: bx + bw - 44, borderBottom: `3px solid ${color}`, borderRight: `3px solid ${color}`, borderRadius: '0 0 6px 0' },
+    ]
+    return corners.map((s, i) => (
+      <div key={i} style={{
+        position: 'absolute', width: 44, height: 44,
+        transition: 'top 0.1s ease-out, left 0.1s ease-out, width 0.1s ease-out, height 0.1s ease-out',
+        animation: faceFound ? 'none' : 'pulse-ring 1.5s ease-out infinite',
+        pointerEvents: 'none',
+        zIndex: 15,
+        ...s,
+      }} />
+    ))
   }
 
   return (
@@ -125,16 +223,7 @@ export default function KioskPage() {
 
       {phase === 'idle' && (
         <>
-          {/* Face oval guide */}
-          <div style={{
-            position: 'absolute', top: '50%', left: '50%',
-            transform: 'translate(-50%, -60%)',
-            width: 200, height: 260,
-            border: '3px solid rgba(59,130,246,0.45)',
-            borderRadius: '50%',
-            boxShadow: '0 0 32px rgba(59,130,246,0.15)',
-            pointerEvents: 'none',
-          }} />
+          {renderCornerBrackets()}
 
           <div style={{
             position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 20,
