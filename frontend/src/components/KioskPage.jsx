@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState } from 'react'
+import { FaceDetector as MPFaceDetector, FilesetResolver } from '@mediapipe/tasks-vision'
 import { createLivenessSession, identifyLive } from '../api/faceApi.js'
 import AccessResult from './AccessResult.jsx'
 import { FaceLivenessDetector } from '@aws-amplify/ui-react-liveness'
@@ -6,9 +7,20 @@ import '@aws-amplify/ui-react/styles.css'
 
 const AUTO_RESET_MS = 10000
 const COUNTDOWN_START = 3
+const MEDIAPIPE_VERSION = '0.10.35'
 
 function getKioskTenantId() {
   return import.meta.env.VITE_TENANT_ID
+}
+
+function isCentered(faceBox) {
+  if (!faceBox) return true
+  const cx = faceBox.x + faceBox.w / 2
+  const cy = faceBox.y + faceBox.h / 2
+  return (
+    Math.abs(cx - window.innerWidth / 2) < window.innerWidth * 0.25 &&
+    Math.abs(cy - window.innerHeight / 2) < window.innerHeight * 0.30
+  )
 }
 
 export default function KioskPage() {
@@ -17,6 +29,7 @@ export default function KioskPage() {
   const countdownRef = useRef(null)
   const faceDetectorRef = useRef(null)
   const rafRef = useRef(null)
+  const faceBoxRef = useRef(null)
 
   const [phase, setPhase] = useState('idle')
   const [countdown, setCountdown] = useState(COUNTDOWN_START)
@@ -27,7 +40,7 @@ export default function KioskPage() {
   const [identifying, setIdentifying] = useState(false)
   const [faceBox, setFaceBox] = useState(null)
 
-  // Camera + FaceDetector init
+  // Camera + MediaPipe init
   useEffect(() => {
     navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 1280, height: 720 } })
       .then(stream => {
@@ -35,21 +48,47 @@ export default function KioskPage() {
         if (videoRef.current) videoRef.current.srcObject = stream
       })
       .catch(() => {})
-    if ('FaceDetector' in window) {
-      faceDetectorRef.current = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 1 })
+
+    let mounted = true
+    async function initDetector() {
+      try {
+        const vision = await FilesetResolver.forVisionTasks(
+          `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`
+        )
+        if (!mounted) return
+        faceDetectorRef.current = await MPFaceDetector.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
+            delegate: 'GPU',
+          },
+          runningMode: 'VIDEO',
+        })
+      } catch { /* face detection unavailable — brackets stay centered */ }
     }
+    initDetector()
+
     return () => {
+      mounted = false
       if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop())
       cancelAnimationFrame(rafRef.current)
     }
   }, [])
 
-  // Countdown auto-start in idle
+  // Keep ref in sync so countdown interval can read latest faceBox
+  useEffect(() => { faceBoxRef.current = faceBox }, [faceBox])
+
+  // Countdown — pauses and resets when face detected but off-center
   useEffect(() => {
     if (phase !== 'idle') return
     setCountdown(COUNTDOWN_START)
     let n = COUNTDOWN_START
     countdownRef.current = setInterval(() => {
+      const box = faceBoxRef.current
+      if (box && !isCentered(box)) {
+        n = COUNTDOWN_START
+        setCountdown(COUNTDOWN_START)
+        return
+      }
       n--
       setCountdown(n)
       if (n <= 0) {
@@ -60,23 +99,24 @@ export default function KioskPage() {
     return () => clearInterval(countdownRef.current)
   }, [phase])
 
-  // Face tracking loop — idle phase only
+  // Face tracking RAF loop — idle phase only
   useEffect(() => {
     if (phase !== 'idle') {
       cancelAnimationFrame(rafRef.current)
       return
     }
-    if (!faceDetectorRef.current) return
 
     let current = null
+    let cancelled = false
 
-    async function tick() {
+    function tick() {
+      if (cancelled) return
       const video = videoRef.current
-      if (video && video.readyState >= 2) {
+      if (video && video.readyState >= 2 && faceDetectorRef.current) {
         try {
-          const faces = await faceDetectorRef.current.detect(video)
-          if (faces.length > 0) {
-            const b = faces[0].boundingBox
+          const det = faceDetectorRef.current.detectForVideo(video, performance.now())
+          if (det.detections.length > 0) {
+            const bbox = det.detections[0].boundingBox
             const vw = video.videoWidth, vh = video.videoHeight
             const sw = window.innerWidth, sh = window.innerHeight
             const videoAspect = vw / vh
@@ -88,10 +128,10 @@ export default function KioskPage() {
               scale = sw / vw; ox = 0; oy = (sh - vh * scale) / 2
             }
             const target = {
-              x: b.x * scale + ox,
-              y: b.y * scale + oy,
-              w: b.width * scale,
-              h: b.height * scale,
+              x: bbox.originX * scale + ox,
+              y: bbox.originY * scale + oy,
+              w: bbox.width * scale,
+              h: bbox.height * scale,
             }
             if (!current) current = target
             const alpha = 0.2
@@ -108,10 +148,13 @@ export default function KioskPage() {
           }
         } catch { /* ignore */ }
       }
-      rafRef.current = requestAnimationFrame(tick)
+      if (!cancelled) rafRef.current = requestAnimationFrame(tick)
     }
     rafRef.current = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(rafRef.current)
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(rafRef.current)
+    }
   }, [phase])
 
   async function startScan() {
@@ -175,19 +218,25 @@ export default function KioskPage() {
     setFaceBox(null)
   }
 
-  // Corner brackets for idle overlay
   function renderCornerBrackets() {
+    const faceFound = !!faceBox
+    const centered = isCentered(faceBox)
     const box = faceBox ?? {
       x: window.innerWidth / 2 - 100,
       y: window.innerHeight / 2 - 155,
       w: 200,
       h: 260,
     }
-    const faceFound = !!faceBox
-    const color = faceFound ? '#3b82f6' : 'rgba(255,255,255,0.7)'
-    const glow = faceFound
-      ? '0 0 10px rgba(59,130,246,0.8), 0 0 20px rgba(59,130,246,0.4)'
-      : '0 0 8px rgba(255,255,255,0.3)'
+    const color = !faceFound
+      ? 'rgba(255,255,255,0.7)'
+      : centered
+        ? '#3b82f6'
+        : '#f59e0b'
+    const glow = !faceFound
+      ? '0 0 8px rgba(255,255,255,0.3)'
+      : centered
+        ? '0 0 10px rgba(59,130,246,0.8), 0 0 20px rgba(59,130,246,0.4)'
+        : '0 0 10px rgba(245,158,11,0.8), 0 0 20px rgba(245,158,11,0.4)'
     const pad = 14
     const bx = box.x - pad
     const by = box.y - pad
@@ -212,6 +261,9 @@ export default function KioskPage() {
       }} />
     ))
   }
+
+  const faceFound = !!faceBox
+  const centered = isCentered(faceBox)
 
   return (
     <div style={{ position: 'relative', width: '100vw', height: '100dvh', background: '#080e1a', overflow: 'hidden' }}>
@@ -240,10 +292,19 @@ export default function KioskPage() {
                 <div style={{ fontSize: 16, fontWeight: 600, color: '#f87171', marginBottom: 4 }}>{livenessError}</div>
                 <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.3)' }}>Restarting…</div>
               </>
+            ) : faceFound && !centered ? (
+              <>
+                <div style={{ fontSize: 18, fontWeight: 600, color: '#f59e0b', marginBottom: 4 }}>
+                  Move to center
+                </div>
+                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.35)' }}>
+                  Position your face within the brackets
+                </div>
+              </>
             ) : (
               <>
                 <div style={{ fontSize: 18, fontWeight: 600, color: '#e8edf5', marginBottom: 4 }}>
-                  Stand in front of the camera
+                  {faceFound ? 'Hold still' : 'Stand in front of the camera'}
                 </div>
                 <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.35)' }}>
                   Starting in {countdown}…

@@ -10,6 +10,7 @@
   "dependencies": {
     "@aws-amplify/ui-react": "^6.15.4",
     "@aws-amplify/ui-react-liveness": "^3.6.5",
+    "@mediapipe/tasks-vision": "^0.10.35",
     "aws-amplify": "^6.17.0",
     "jsqr": "^1.4.0",
     "qrcode.react": "^4.2.0",
