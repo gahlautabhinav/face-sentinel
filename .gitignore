@@ -29,8 +29,14 @@ frontend/.env.*.local
 # Plans & local tool output
 plan.md
 plan2.md
+plan3.md
 graphify-out/
 .antigravitycli/
+
+# AI tooling
+.claude/
+*.original.md
+*.jsonl
 
 # Logs
 *.log
