@@ -1,10 +1,22 @@
-import { Routes, Route, NavLink, Navigate } from 'react-router-dom'
+import { Routes, Route, NavLink, Navigate, useLocation } from 'react-router-dom'
 import EnrollPage from './components/EnrollPage.jsx'
 import IdentifyPage from './components/IdentifyPage.jsx'
 import DeletePage from './components/DeletePage.jsx'
 import KioskPage from './components/KioskPage.jsx'
+import RegisterPage from './components/RegisterPage.jsx'
 
 export default function App() {
+  const location = useLocation()
+  const isRegister = location.pathname === '/register'
+
+  if (isRegister) {
+    return (
+      <Routes>
+        <Route path="/register" element={<RegisterPage />} />
+      </Routes>
+    )
+  }
+
   return (
     <>
       <nav className="nav">
@@ -27,3 +39,4 @@ export default function App() {
     </>
   )
 }
+

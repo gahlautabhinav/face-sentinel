@@ -58,6 +58,10 @@ public class FaceIdentificationService {
 
         livenessProvider.checkLiveness(imageBytes);
 
+        return identifyFaceFromBytes(tenantId, imageBytes);
+    }
+
+    public FaceIdentifyResponse identifyFaceFromBytes(UUID tenantId, byte[] imageBytes) {
         String collectionId = collectionPrefix + "-" + tenantId;
 
         SearchFacesByImageResponse searchResponse;

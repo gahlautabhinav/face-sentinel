@@ -40,6 +40,7 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/api/face/verify").hasRole("KIOSK")
                 .requestMatchers(HttpMethod.POST, "/api/liveness/session").hasAnyRole("ADMIN", "KIOSK")
                 .requestMatchers(HttpMethod.GET, "/api/liveness/session/**").hasAnyRole("ADMIN", "KIOSK")
+                .requestMatchers(HttpMethod.POST, "/api/liveness/identify").hasRole("KIOSK")
                 .requestMatchers(HttpMethod.POST, "/api/face/enroll-live").hasRole("ADMIN")
                 .anyRequest().authenticated()
             )
