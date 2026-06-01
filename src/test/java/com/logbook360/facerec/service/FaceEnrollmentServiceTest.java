@@ -29,6 +29,8 @@ class FaceEnrollmentServiceTest {
     @Mock private S3Service s3Service;
     @Mock private VisitorFaceRepository visitorFaceRepository;
     @Mock private RecognitionLogRepository recognitionLogRepository;
+    @Mock private com.logbook360.facerec.repository.TenantRepository tenantRepository;
+    @Mock private com.logbook360.facerec.repository.VisitorRepository visitorRepository;
 
     private FaceEnrollmentService service;
 
@@ -36,7 +38,8 @@ class FaceEnrollmentServiceTest {
     void setUp() {
         service = new FaceEnrollmentService(
             rekognitionService, s3Service, visitorFaceRepository,
-            recognitionLogRepository, "logbook360", "test-bucket");
+            recognitionLogRepository, tenantRepository, visitorRepository,
+            "logbook360", "test-bucket");
     }
 
     @Test

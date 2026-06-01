@@ -23,12 +23,13 @@ class LivenessServiceTest {
 
     @Mock private RekognitionService rekognitionService;
     @Mock private FaceEnrollmentService enrollmentService;
+    @Mock private FaceIdentificationService identificationService;
 
     private LivenessService service;
 
     @BeforeEach
     void setUp() {
-        service = new LivenessService(rekognitionService, enrollmentService, 80.0f);
+        service = new LivenessService(rekognitionService, enrollmentService, identificationService, 80.0f);
     }
 
     @Test
