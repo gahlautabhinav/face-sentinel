@@ -4,6 +4,7 @@ import com.logbook360.facerec.domain.RecognitionLog;
 import com.logbook360.facerec.domain.Tenant;
 import com.logbook360.facerec.domain.Visitor;
 import com.logbook360.facerec.domain.VisitorFace;
+import com.logbook360.facerec.dto.response.EnrollmentDto;
 import com.logbook360.facerec.dto.response.FaceEnrollResponse;
 import com.logbook360.facerec.exception.*;
 import com.logbook360.facerec.repository.RecognitionLogRepository;
@@ -160,6 +161,13 @@ public class FaceEnrollmentService {
                 .confidence(confidence)
                 .message("Face enrolled successfully via liveness")
                 .build();
+    }
+
+    public List<EnrollmentDto> listEnrollments(UUID tenantId) {
+        return visitorFaceRepository.findAllByTenantIdOrderByEnrolledAtDesc(tenantId)
+                .stream()
+                .map(vf -> EnrollmentDto.from(vf, visitorRepository.findById(vf.getVisitorId()).orElse(null)))
+                .collect(java.util.stream.Collectors.toList());
     }
 
     private void validateImageFile(MultipartFile file) {

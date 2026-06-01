@@ -2,6 +2,7 @@ package com.logbook360.facerec.controller;
 
 import com.logbook360.facerec.dto.request.LivenessEnrollRequest;
 import com.logbook360.facerec.dto.response.ApiResponse;
+import com.logbook360.facerec.dto.response.EnrollmentDto;
 import com.logbook360.facerec.dto.response.FaceEnrollResponse;
 import com.logbook360.facerec.dto.response.FaceIdentifyResponse;
 import com.logbook360.facerec.dto.response.FaceVerifyResponse;
@@ -16,6 +17,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -63,6 +65,14 @@ public class FaceController {
                 tenantId, request.getSessionId(),
                 request.getVisitorName(), request.getEmail(), request.getMobile());
         return ResponseEntity.ok(ApiResponse.success(response, response.getMessage()));
+    }
+
+    @GetMapping("/enrollments")
+    public ResponseEntity<ApiResponse<List<EnrollmentDto>>> listEnrollments(
+            @RequestHeader("X-Tenant-Id") UUID tenantId) {
+        List<EnrollmentDto> enrollments = enrollmentService.listEnrollments(tenantId);
+        return ResponseEntity.ok(ApiResponse.success(enrollments,
+                "Fetched " + enrollments.size() + " enrollment(s)"));
     }
 
     @DeleteMapping("/{visitorId}")

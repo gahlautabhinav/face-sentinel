@@ -87,6 +87,14 @@ export async function enrollLive({ tenantId, sessionId, visitorName, email, mobi
   return res.json()
 }
 
+export async function listEnrollments({ tenantId }) {
+  const res = await authFetch('ADMIN', `${BASE}/enrollments`, {
+    headers: { 'X-Tenant-Id': tenantId },
+  })
+  if (!res.ok) throw new Error(`Failed: HTTP ${res.status}`)
+  return res.json()
+}
+
 export async function identifyLive({ tenantId, sessionId }) {
   const res = await authFetch('KIOSK', '/api/liveness/identify', {
     method: 'POST',

@@ -17,6 +17,8 @@ public interface VisitorFaceRepository extends JpaRepository<VisitorFace, UUID> 
 
     List<VisitorFace> findByVisitorIdAndTenantId(UUID visitorId, UUID tenantId);
 
+    List<VisitorFace> findAllByTenantIdOrderByEnrolledAtDesc(UUID tenantId);
+
     @Modifying
     @Query("DELETE FROM VisitorFace vf WHERE vf.visitorId = :visitorId AND vf.tenantId = :tenantId")
     void deleteByVisitorIdAndTenantId(UUID visitorId, UUID tenantId);

@@ -4,6 +4,7 @@ import IdentifyPage from './components/IdentifyPage.jsx'
 import DeletePage from './components/DeletePage.jsx'
 import KioskPage from './components/KioskPage.jsx'
 import RegisterPage from './components/RegisterPage.jsx'
+import AdminPage from './components/AdminPage.jsx'
 
 const ScanIcon = () => (
   <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
@@ -41,6 +42,7 @@ export default function App() {
         <NavLink to="/identify"  className={({ isActive }) => isActive ? 'active' : ''}>Identify</NavLink>
         <NavLink to="/delete"    className={({ isActive }) => isActive ? 'active' : ''}>Delete</NavLink>
         <NavLink to="/kiosk"     className={({ isActive }) => isActive ? 'active' : ''}>Kiosk</NavLink>
+        <NavLink to="/admin"     className={({ isActive }) => isActive ? 'active' : ''}>Admin</NavLink>
 
         <div className="nav-status">
           <div className="nav-status-dot" />
@@ -54,6 +56,7 @@ export default function App() {
         <Route path="/identify" element={<IdentifyPage />} />
         <Route path="/delete"   element={<DeletePage />} />
         <Route path="/kiosk"    element={<KioskPage />} />
+        <Route path="/admin"    element={<AdminPage />} />
       </Routes>
     </>
   )

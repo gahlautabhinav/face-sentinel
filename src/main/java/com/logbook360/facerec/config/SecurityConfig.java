@@ -34,8 +34,9 @@ public class SecurityConfig {
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.POST, "/api/auth/token").permitAll()
-                .requestMatchers(HttpMethod.POST, "/api/face/enroll").hasRole("ADMIN")
-                .requestMatchers(HttpMethod.DELETE, "/api/face/**").hasRole("ADMIN")
+                .requestMatchers(HttpMethod.GET,    "/api/face/enrollments").hasRole("ADMIN")
+                .requestMatchers(HttpMethod.POST,   "/api/face/enroll").hasRole("ADMIN")
+                .requestMatchers(HttpMethod.DELETE,  "/api/face/**").hasRole("ADMIN")
                 .requestMatchers(HttpMethod.POST, "/api/face/identify").hasRole("KIOSK")
                 .requestMatchers(HttpMethod.POST, "/api/face/verify").hasRole("KIOSK")
                 .requestMatchers(HttpMethod.POST, "/api/liveness/session").hasAnyRole("ADMIN", "KIOSK")
