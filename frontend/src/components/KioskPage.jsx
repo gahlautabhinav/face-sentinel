@@ -30,6 +30,8 @@ export default function KioskPage() {
   const faceDetectorRef = useRef(null)
   const rafRef = useRef(null)
   const faceBoxRef = useRef(null)
+  const prevPhaseRef = useRef('idle')
+  const handlingErrorRef = useRef(false)
 
   const [phase, setPhase] = useState('idle')
   const [countdown, setCountdown] = useState(COUNTDOWN_START)
@@ -77,9 +79,49 @@ export default function KioskPage() {
   // Keep ref in sync so countdown interval can read latest faceBox
   useEffect(() => { faceBoxRef.current = faceBox }, [faceBox])
 
+  // On return from scanning: reinit camera stream if dead + reinit MediaPipe detector
+  // FaceLivenessDetector stops camera tracks and corrupts MediaPipe state on unmount
+  useEffect(() => {
+    if (phase !== 'idle') { prevPhaseRef.current = phase; return }
+    const comingFromScan = prevPhaseRef.current === 'scanning'
+    prevPhaseRef.current = phase
+
+    const tracks = streamRef.current?.getTracks() || []
+    if (tracks.length === 0 || tracks.some(t => t.readyState === 'ended')) {
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 1280, height: 720 } })
+        .then(stream => {
+          streamRef.current = stream
+          if (videoRef.current) videoRef.current.srcObject = stream
+        })
+        .catch(() => {})
+    }
+
+    if (comingFromScan) {
+      async function reinitDetector() {
+        console.log('[MediaPipe] reinit start')
+        try {
+          if (faceDetectorRef.current) { faceDetectorRef.current.close(); faceDetectorRef.current = null }
+          const vision = await FilesetResolver.forVisionTasks(
+            `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`
+          )
+          faceDetectorRef.current = await MPFaceDetector.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
+              delegate: 'GPU',
+            },
+            runningMode: 'VIDEO',
+          })
+          console.log('[MediaPipe] reinit done')
+        } catch (e) { console.error('[MediaPipe] reinit failed:', e) }
+      }
+      reinitDetector()
+    }
+  }, [phase])
+
   // Countdown — pauses and resets when face detected but off-center
   useEffect(() => {
     if (phase !== 'idle') return
+    if (livenessError) return
     setCountdown(COUNTDOWN_START)
     let n = COUNTDOWN_START
     countdownRef.current = setInterval(() => {
@@ -97,7 +139,7 @@ export default function KioskPage() {
       }
     }, 1000)
     return () => clearInterval(countdownRef.current)
-  }, [phase])
+  }, [phase, livenessError])
 
   // Face tracking RAF loop — idle phase only
   useEffect(() => {
@@ -146,7 +188,7 @@ export default function KioskPage() {
             current = null
             setFaceBox(null)
           }
-        } catch { /* ignore */ }
+        } catch (e) { console.warn('[MediaPipe] detectForVideo error:', e) }
       }
       if (!cancelled) rafRef.current = requestAnimationFrame(tick)
     }
@@ -161,7 +203,7 @@ export default function KioskPage() {
     const tenantId = getKioskTenantId()
     if (!tenantId) {
       setLivenessError('Kiosk not configured — VITE_TENANT_ID missing')
-      setTimeout(handleReset, 4000)
+      setTimeout(() => setLivenessError(null), 4000)
       return
     }
     try {
@@ -172,7 +214,7 @@ export default function KioskPage() {
       setPhase('scanning')
     } catch {
       setLivenessError('Unable to start — please try again')
-      setTimeout(handleReset, 3000)
+      setTimeout(() => setLivenessError(null), 3000)
     }
   }
 
@@ -197,9 +239,9 @@ export default function KioskPage() {
       })
       setPhase('result')
       setTimeout(handleReset, AUTO_RESET_MS)
-    } catch {
-      setLivenessError('Unable to detect — please try again')
-      setTimeout(handleReset, 4000)
+    } catch (e) {
+      console.error('[Liveness] handleLivenessComplete error:', e)
+      showErrorAndReset('Not a real face — please try again')
     } finally {
       setIdentifying(false)
     }
@@ -216,6 +258,25 @@ export default function KioskPage() {
     setResult(null)
     setIdentifying(false)
     setFaceBox(null)
+  }
+
+  function showErrorAndReset(msg) {
+    if (handlingErrorRef.current) return
+    handlingErrorRef.current = true
+    clearInterval(countdownRef.current)
+    cancelAnimationFrame(rafRef.current)
+    setPhase('idle')
+    setCountdown(COUNTDOWN_START)
+    setLivenessSessionId(null)
+    setLivenessReady(false)
+    setResult(null)
+    setIdentifying(false)
+    setFaceBox(null)
+    setLivenessError(msg)
+    setTimeout(() => {
+      setLivenessError(null)
+      handlingErrorRef.current = false
+    }, 4000)
   }
 
   function renderCornerBrackets() {
@@ -365,7 +426,6 @@ export default function KioskPage() {
               <div style={{ textAlign: 'center' }}>
                 <div style={{ fontSize: 17, fontWeight: 700, color: '#e8edf5', marginBottom: 8 }}>Getting ready…</div>
                 <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.45)', lineHeight: 1.6, maxWidth: 280 }}>
-                  Colors will briefly flash on screen.<br />
                   Hold still and look directly at the camera.
                 </div>
               </div>
@@ -377,7 +437,14 @@ export default function KioskPage() {
                   sessionId={livenessSessionId}
                   region={import.meta.env.VITE_AWS_REGION || 'ap-south-1'}
                   onAnalysisComplete={handleLivenessComplete}
-                  onError={() => { setLivenessError('Unable to detect — please try again'); setTimeout(handleReset, 4000) }}
+                  onError={(err) => {
+                    console.error('[Liveness] onError:', err, 'state:', err?.state)
+                    const state = err?.state ?? ''
+                    const msg = (state === 'TIMEOUT' || state === 'FACE_FIT_TIMEOUT')
+                      ? 'Scan timed out — please try again'
+                      : 'Not a real face — please try again'
+                    showErrorAndReset(msg)
+                  }}
                   disableStartScreen
                 />
               </div>

@@ -7,6 +7,8 @@ import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.services.rekognition.RekognitionClient;
 import software.amazon.awssdk.services.rekognition.model.*;
 
+import java.util.List;
+
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -65,7 +67,15 @@ public class RekognitionService {
 
     public CreateFaceLivenessSessionResponse createFaceLivenessSession() {
         return rekognitionClient.createFaceLivenessSession(
-                CreateFaceLivenessSessionRequest.builder().build());
+                CreateFaceLivenessSessionRequest.builder()
+                        .settings(CreateFaceLivenessSessionRequestSettings.builder()
+                                .challengePreferences(List.of(
+                                        ChallengePreference.builder()
+                                                .type(ChallengeType.FACE_MOVEMENT_CHALLENGE)
+                                                .build()
+                                ))
+                                .build())
+                        .build());
     }
 
     public GetFaceLivenessSessionResultsResponse getFaceLivenessSessionResults(String sessionId) {
