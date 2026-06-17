@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState } from 'react'
 import { FaceDetector as MPFaceDetector, FilesetResolver } from '@mediapipe/tasks-vision'
-import { createLivenessSession, identifyLive } from '../api/faceApi.js'
+import { createLivenessSession, identifyLive, identifyFace } from '../api/faceApi.js'
 import AccessResult from './AccessResult.jsx'
 import { FaceLivenessDetector } from '@aws-amplify/ui-react-liveness'
 import '@aws-amplify/ui-react/styles.css'
@@ -8,6 +8,10 @@ import '@aws-amplify/ui-react/styles.css'
 const AUTO_RESET_MS = 10000
 const COUNTDOWN_START = 3
 const MEDIAPIPE_VERSION = '0.10.35'
+const MOTION_THRESHOLD = 0.008
+const TEXTURE_THRESHOLD = 400
+const MOTION_CANVAS_W = 64
+const MOTION_CANVAS_H = 48
 
 function getKioskTenantId() {
   return import.meta.env.VITE_TENANT_ID
@@ -32,6 +36,10 @@ export default function KioskPage() {
   const faceBoxRef = useRef(null)
   const prevPhaseRef = useRef('idle')
   const handlingErrorRef = useRef(false)
+  const motionCanvasRef = useRef(null)
+  const prevPixelsRef = useRef(null)
+  const motionScoreRef = useRef(0)
+  const textureCanvasRef = useRef(null)
 
   const [phase, setPhase] = useState('idle')
   const [countdown, setCountdown] = useState(COUNTDOWN_START)
@@ -44,6 +52,12 @@ export default function KioskPage() {
 
   // Camera + MediaPipe init
   useEffect(() => {
+    const mc = document.createElement('canvas')
+    mc.width = MOTION_CANVAS_W; mc.height = MOTION_CANVAS_H
+    motionCanvasRef.current = mc
+    const tc = document.createElement('canvas')
+    textureCanvasRef.current = tc
+
     navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 1280, height: 720 } })
       .then(stream => {
         streamRef.current = stream
@@ -190,6 +204,29 @@ export default function KioskPage() {
           }
         } catch (e) { console.warn('[MediaPipe] detectForVideo error:', e) }
       }
+
+      // Motion detection — downsample to 64×48, EMA-smooth frame diff
+      if (video && video.readyState >= 2 && motionCanvasRef.current) {
+        const mc = motionCanvasRef.current
+        const ctx = mc.getContext('2d', { willReadFrequently: true })
+        ctx.drawImage(video, 0, 0, MOTION_CANVAS_W, MOTION_CANVAS_H)
+        const { data } = ctx.getImageData(0, 0, MOTION_CANVAS_W, MOTION_CANVAS_H)
+        const curr = new Uint8Array(MOTION_CANVAS_W * MOTION_CANVAS_H)
+        for (let i = 0; i < curr.length; i++) {
+          const p = i * 4
+          curr[i] = (data[p] * 77 + data[p + 1] * 150 + data[p + 2] * 29) >> 8
+        }
+        if (prevPixelsRef.current) {
+          let diff = 0
+          for (let i = 0; i < curr.length; i++) {
+            if (Math.abs(curr[i] - prevPixelsRef.current[i]) > 20) diff++
+          }
+          const raw = diff / curr.length
+          motionScoreRef.current = motionScoreRef.current * 0.7 + raw * 0.3
+        }
+        prevPixelsRef.current = curr
+      }
+
       if (!cancelled) rafRef.current = requestAnimationFrame(tick)
     }
     rafRef.current = requestAnimationFrame(tick)
@@ -199,6 +236,41 @@ export default function KioskPage() {
     }
   }, [phase])
 
+  function computeFaceTextureVariance() {
+    const video = videoRef.current
+    const box = faceBoxRef.current
+    if (!video || !box || !textureCanvasRef.current) return Infinity
+    const vw = video.videoWidth, vh = video.videoHeight
+    const sw = window.innerWidth, sh = window.innerHeight
+    const videoAspect = vw / vh, screenAspect = sw / sh
+    let scale, ox, oy
+    if (videoAspect > screenAspect) {
+      scale = sh / vh; ox = (sw - vw * scale) / 2; oy = 0
+    } else {
+      scale = sw / vw; ox = 0; oy = (sh - vh * scale) / 2
+    }
+    const fx = Math.max(0, (box.x - ox) / scale)
+    const fy = Math.max(0, (box.y - oy) / scale)
+    const fw = Math.min(box.w / scale, vw - fx)
+    const fh = Math.min(box.h / scale, vh - fy)
+    if (fw < 20 || fh < 20) return Infinity
+    const tc = textureCanvasRef.current
+    tc.width = 32; tc.height = 32
+    const ctx = tc.getContext('2d', { willReadFrequently: true })
+    ctx.drawImage(video, fx, fy, fw, fh, 0, 0, 32, 32)
+    const { data } = ctx.getImageData(0, 0, 32, 32)
+    const n = 32 * 32
+    let sum = 0, sumSq = 0
+    for (let i = 0; i < n; i++) {
+      const p = i * 4
+      const lum = (data[p] * 77 + data[p + 1] * 150 + data[p + 2] * 29) >> 8
+      sum += lum
+      sumSq += lum * lum
+    }
+    const mean = sum / n
+    return sumSq / n - mean * mean
+  }
+
   async function startScan() {
     const tenantId = getKioskTenantId()
     if (!tenantId) {
@@ -206,15 +278,51 @@ export default function KioskPage() {
       setTimeout(() => setLivenessError(null), 4000)
       return
     }
+    const hasMotion = motionScoreRef.current > MOTION_THRESHOLD
+    const textureVariance = computeFaceTextureVariance()
+    const looksReal = hasMotion && textureVariance > TEXTURE_THRESHOLD
+    console.log('[scan] motion:', motionScoreRef.current.toFixed(3), 'texture:', Math.round(textureVariance), 'looksReal:', looksReal)
+    if (looksReal) {
+      await captureAndIdentify(tenantId)
+    } else {
+      try {
+        const res = await createLivenessSession('KIOSK')
+        setLivenessSessionId(res.data.sessionId)
+        setLivenessError(null)
+        setLivenessReady(false)
+        setPhase('scanning')
+      } catch {
+        setLivenessError('Unable to start — please try again')
+        setTimeout(() => setLivenessError(null), 3000)
+      }
+    }
+  }
+
+  async function captureAndIdentify(tenantId) {
+    const video = videoRef.current
+    if (!video) return
+    setIdentifying(true)
+    setPhase('scanning')
     try {
-      const res = await createLivenessSession('KIOSK')
-      setLivenessSessionId(res.data.sessionId)
-      setLivenessError(null)
-      setLivenessReady(false)
-      setPhase('scanning')
+      const canvas = document.createElement('canvas')
+      canvas.width = video.videoWidth
+      canvas.height = video.videoHeight
+      canvas.getContext('2d').drawImage(video, 0, 0)
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92))
+      const res = await identifyFace({ tenantId, imageFile: blob })
+      setResult({
+        data: {
+          verified: res.data?.matched,
+          visitorName: res.data?.visitorName,
+          similarity: res.data?.similarity,
+        },
+      })
+      setPhase('result')
+      setTimeout(handleReset, AUTO_RESET_MS)
     } catch {
-      setLivenessError('Unable to start — please try again')
-      setTimeout(() => setLivenessError(null), 3000)
+      showErrorAndReset('Unable to identify — please try again')
+    } finally {
+      setIdentifying(false)
     }
   }
 
@@ -250,6 +358,8 @@ export default function KioskPage() {
   function handleReset() {
     clearInterval(countdownRef.current)
     cancelAnimationFrame(rafRef.current)
+    motionScoreRef.current = 0
+    prevPixelsRef.current = null
     setPhase('idle')
     setCountdown(COUNTDOWN_START)
     setLivenessSessionId(null)
@@ -265,6 +375,8 @@ export default function KioskPage() {
     handlingErrorRef.current = true
     clearInterval(countdownRef.current)
     cancelAnimationFrame(rafRef.current)
+    motionScoreRef.current = 0
+    prevPixelsRef.current = null
     setPhase('idle')
     setCountdown(COUNTDOWN_START)
     setLivenessSessionId(null)
@@ -376,7 +488,7 @@ export default function KioskPage() {
         </>
       )}
 
-      {phase === 'scanning' && livenessSessionId && (
+      {phase === 'scanning' && (livenessSessionId || identifying) && (
         <div style={{
           position: 'absolute', inset: 0, zIndex: 10,
           background: '#080e1a',
