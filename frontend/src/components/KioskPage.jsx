@@ -8,8 +8,9 @@ import '@aws-amplify/ui-react/styles.css'
 const AUTO_RESET_MS = 10000
 const COUNTDOWN_START = 3
 const MEDIAPIPE_VERSION = '0.10.35'
-const MOTION_THRESHOLD = 0.008
+const MOTION_THRESHOLD = 0.010
 const TEXTURE_THRESHOLD = 400
+const SKIN_RB_THRESHOLD = 1.25   // real skin R/B ratio; phone screen (cool backlight) is ~1.0–1.2
 const MOTION_CANVAS_W = 64
 const MOTION_CANVAS_H = 48
 
@@ -63,7 +64,7 @@ export default function KioskPage() {
         streamRef.current = stream
         if (videoRef.current) videoRef.current.srcObject = stream
       })
-      .catch(() => {})
+      .catch(() => { })
 
     let mounted = true
     async function initDetector() {
@@ -107,7 +108,7 @@ export default function KioskPage() {
           streamRef.current = stream
           if (videoRef.current) videoRef.current.srcObject = stream
         })
-        .catch(() => {})
+        .catch(() => { })
     }
 
     if (comingFromScan) {
@@ -236,10 +237,10 @@ export default function KioskPage() {
     }
   }, [phase])
 
-  function computeFaceTextureVariance() {
+  function computeFaceFeatures() {
     const video = videoRef.current
     const box = faceBoxRef.current
-    if (!video || !box || !textureCanvasRef.current) return Infinity
+    if (!video || !box || !textureCanvasRef.current) return { variance: Infinity, rbRatio: 0 }
     const vw = video.videoWidth, vh = video.videoHeight
     const sw = window.innerWidth, sh = window.innerHeight
     const videoAspect = vw / vh, screenAspect = sw / sh
@@ -253,22 +254,26 @@ export default function KioskPage() {
     const fy = Math.max(0, (box.y - oy) / scale)
     const fw = Math.min(box.w / scale, vw - fx)
     const fh = Math.min(box.h / scale, vh - fy)
-    if (fw < 20 || fh < 20) return Infinity
+    if (fw < 20 || fh < 20) return { variance: Infinity, rbRatio: 0 }
     const tc = textureCanvasRef.current
     tc.width = 32; tc.height = 32
     const ctx = tc.getContext('2d', { willReadFrequently: true })
     ctx.drawImage(video, fx, fy, fw, fh, 0, 0, 32, 32)
     const { data } = ctx.getImageData(0, 0, 32, 32)
     const n = 32 * 32
-    let sum = 0, sumSq = 0
+    let sum = 0, sumSq = 0, sumR = 0, sumB = 0
     for (let i = 0; i < n; i++) {
       const p = i * 4
       const lum = (data[p] * 77 + data[p + 1] * 150 + data[p + 2] * 29) >> 8
       sum += lum
       sumSq += lum * lum
+      sumR += data[p]
+      sumB += data[p + 2]
     }
     const mean = sum / n
-    return sumSq / n - mean * mean
+    const variance = sumSq / n - mean * mean
+    const rbRatio = sumB > 0 ? sumR / sumB : 0
+    return { variance, rbRatio }
   }
 
   async function startScan() {
@@ -279,9 +284,9 @@ export default function KioskPage() {
       return
     }
     const hasMotion = motionScoreRef.current > MOTION_THRESHOLD
-    const textureVariance = computeFaceTextureVariance()
-    const looksReal = hasMotion && textureVariance > TEXTURE_THRESHOLD
-    console.log('[scan] motion:', motionScoreRef.current.toFixed(3), 'texture:', Math.round(textureVariance), 'looksReal:', looksReal)
+    const { variance, rbRatio } = computeFaceFeatures()
+    const looksReal = hasMotion && variance > TEXTURE_THRESHOLD && rbRatio > SKIN_RB_THRESHOLD
+    console.log('[scan] motion:', motionScoreRef.current.toFixed(3), 'texture:', Math.round(variance), 'rbRatio:', rbRatio.toFixed(2), 'looksReal:', looksReal)
     if (looksReal) {
       await captureAndIdentify(tenantId)
     } else {
@@ -417,9 +422,9 @@ export default function KioskPage() {
     const bh = box.h + pad * 2
     const B = '4px'
     const corners = [
-      { top: by,           left: bx,           borderTop: `${B} solid ${color}`, borderLeft:  `${B} solid ${color}`, borderRadius: '6px 0 0 0' },
-      { top: by,           left: bx + bw - 48, borderTop: `${B} solid ${color}`, borderRight: `${B} solid ${color}`, borderRadius: '0 6px 0 0' },
-      { top: by + bh - 48, left: bx,           borderBottom: `${B} solid ${color}`, borderLeft:  `${B} solid ${color}`, borderRadius: '0 0 0 6px' },
+      { top: by, left: bx, borderTop: `${B} solid ${color}`, borderLeft: `${B} solid ${color}`, borderRadius: '6px 0 0 0' },
+      { top: by, left: bx + bw - 48, borderTop: `${B} solid ${color}`, borderRight: `${B} solid ${color}`, borderRadius: '0 6px 0 0' },
+      { top: by + bh - 48, left: bx, borderBottom: `${B} solid ${color}`, borderLeft: `${B} solid ${color}`, borderRadius: '0 0 0 6px' },
       { top: by + bh - 48, left: bx + bw - 48, borderBottom: `${B} solid ${color}`, borderRight: `${B} solid ${color}`, borderRadius: '0 0 6px 0' },
     ]
     return corners.map((s, i) => (
@@ -531,8 +536,8 @@ export default function KioskPage() {
                 animation: 'pulse-ring 1.2s ease-out infinite',
               }}>
                 <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-                  <circle cx="14" cy="14" r="5" fill="#3b82f6"/>
-                  <circle cx="14" cy="14" r="10" stroke="#3b82f6" strokeWidth="1.5" strokeDasharray="4 3"/>
+                  <circle cx="14" cy="14" r="5" fill="#3b82f6" />
+                  <circle cx="14" cy="14" r="10" stroke="#3b82f6" strokeWidth="1.5" strokeDasharray="4 3" />
                 </svg>
               </div>
               <div style={{ textAlign: 'center' }}>
