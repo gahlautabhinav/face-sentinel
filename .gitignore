@@ -28,11 +28,10 @@ frontend/.env.*.local
 
 # Plans & local tool output
 plan.md
-plan2.md
-plan3.md
-plan4.md
+plan*.md
 graphify-out/
 .antigravitycli/
+CLAUDE.md
 
 # AI tooling
 .claude/
