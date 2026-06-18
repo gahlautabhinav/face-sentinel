@@ -306,14 +306,36 @@ export default function KioskPage() {
     const video = videoRef.current
     if (!video) return
     setPhase('scanning')
-    // Wait for person to settle after motion detection before capturing
     await new Promise(resolve => setTimeout(resolve, 800))
     setIdentifying(true)
     try {
       const canvas = document.createElement('canvas')
-      canvas.width = video.videoWidth
-      canvas.height = video.videoHeight
-      canvas.getContext('2d').drawImage(video, 0, 0)
+      const box = faceBoxRef.current
+      if (box) {
+        // Crop face region in video-space and upscale to 400×400 for Rekognition
+        const vw = video.videoWidth, vh = video.videoHeight
+        const sw = window.innerWidth, sh = window.innerHeight
+        const videoAspect = vw / vh, screenAspect = sw / sh
+        let scale, ox, oy
+        if (videoAspect > screenAspect) {
+          scale = sh / vh; ox = (sw - vw * scale) / 2; oy = 0
+        } else {
+          scale = sw / vw; ox = 0; oy = (sh - vh * scale) / 2
+        }
+        // Add 40% padding around face for Rekognition context
+        const padX = box.w * 0.4, padY = box.h * 0.4
+        const fx = Math.max(0, (box.x - padX - ox) / scale)
+        const fy = Math.max(0, (box.y - padY - oy) / scale)
+        const fw = Math.min((box.w + padX * 2) / scale, vw - fx)
+        const fh = Math.min((box.h + padY * 2) / scale, vh - fy)
+        canvas.width = 400; canvas.height = 400
+        canvas.getContext('2d').drawImage(video, fx, fy, fw, fh, 0, 0, 400, 400)
+        console.log('[identify] face crop:', Math.round(fx), Math.round(fy), Math.round(fw), Math.round(fh))
+      } else {
+        canvas.width = video.videoWidth
+        canvas.height = video.videoHeight
+        canvas.getContext('2d').drawImage(video, 0, 0)
+      }
       const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.95))
       const res = await identifyFace({ tenantId, imageFile: blob })
       console.log('[identify] matched:', res.data?.matched, 'similarity:', res.data?.similarity, 'visitor:', res.data?.visitorName)
