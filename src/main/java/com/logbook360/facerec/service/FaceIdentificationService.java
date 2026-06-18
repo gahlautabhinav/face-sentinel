@@ -88,10 +88,21 @@ public class FaceIdentificationService {
 
         VisitorFace visitorFace = visitorFaceRepository
             .findByRekognitionFaceIdAndTenantId(rekognitionFaceId, tenantId)
-            .orElseThrow(() -> new FaceNotFoundException("Face mapping not found: " + rekognitionFaceId));
+            .orElse(null);
+        if (visitorFace == null) {
+            log.warn("Rekognition matched face {} but no DB record found for tenant {}", rekognitionFaceId, tenantId);
+            saveLog(tenantId, null, RecognitionLog.RecognitionAction.IDENTIFY,
+                RecognitionLog.RecognitionStatus.NO_MATCH, similarity, "Orphaned Rekognition face ID");
+            return FaceIdentifyResponse.builder().matched(false).message("No matching visitor found").build();
+        }
 
-        Visitor visitor = visitorRepository.findById(visitorFace.getVisitorId())
-            .orElseThrow(() -> new FaceNotFoundException("Visitor not found: " + visitorFace.getVisitorId()));
+        Visitor visitor = visitorRepository.findById(visitorFace.getVisitorId()).orElse(null);
+        if (visitor == null) {
+            log.warn("VisitorFace {} found but visitor {} missing", rekognitionFaceId, visitorFace.getVisitorId());
+            saveLog(tenantId, null, RecognitionLog.RecognitionAction.IDENTIFY,
+                RecognitionLog.RecognitionStatus.NO_MATCH, similarity, "Visitor record missing");
+            return FaceIdentifyResponse.builder().matched(false).message("No matching visitor found").build();
+        }
 
         saveLog(tenantId, visitor.getId(), RecognitionLog.RecognitionAction.IDENTIFY,
             RecognitionLog.RecognitionStatus.SUCCESS, similarity, null);

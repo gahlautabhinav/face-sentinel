@@ -8,9 +8,9 @@ import '@aws-amplify/ui-react/styles.css'
 const AUTO_RESET_MS = 10000
 const COUNTDOWN_START = 3
 const MEDIAPIPE_VERSION = '0.10.35'
-const MOTION_THRESHOLD = 0.010
-const TEXTURE_THRESHOLD = 400
-const SKIN_RB_THRESHOLD = 1.25   // real skin R/B ratio; phone screen (cool backlight) is ~1.0–1.2
+const MOTION_THRESHOLD = 0.006    // kept for reference, not used in looksReal
+const TEXTURE_THRESHOLD = 1500   // real skin 1800+; phone screen/video ~1150
+const SKIN_RB_THRESHOLD = 1.37   // real skin 1.40–1.48; phone screen ~1.34
 const MOTION_CANVAS_W = 64
 const MOTION_CANVAS_H = 48
 
@@ -283,9 +283,8 @@ export default function KioskPage() {
       setTimeout(() => setLivenessError(null), 4000)
       return
     }
-    const hasMotion = motionScoreRef.current > MOTION_THRESHOLD
     const { variance, rbRatio } = computeFaceFeatures()
-    const looksReal = hasMotion && variance > TEXTURE_THRESHOLD && rbRatio > SKIN_RB_THRESHOLD
+    const looksReal = variance > TEXTURE_THRESHOLD && rbRatio > SKIN_RB_THRESHOLD
     console.log('[scan] motion:', motionScoreRef.current.toFixed(3), 'texture:', Math.round(variance), 'rbRatio:', rbRatio.toFixed(2), 'looksReal:', looksReal)
     if (looksReal) {
       await captureAndIdentify(tenantId)
@@ -306,15 +305,18 @@ export default function KioskPage() {
   async function captureAndIdentify(tenantId) {
     const video = videoRef.current
     if (!video) return
-    setIdentifying(true)
     setPhase('scanning')
+    // Wait for person to settle after motion detection before capturing
+    await new Promise(resolve => setTimeout(resolve, 800))
+    setIdentifying(true)
     try {
       const canvas = document.createElement('canvas')
       canvas.width = video.videoWidth
       canvas.height = video.videoHeight
       canvas.getContext('2d').drawImage(video, 0, 0)
-      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92))
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.95))
       const res = await identifyFace({ tenantId, imageFile: blob })
+      console.log('[identify] matched:', res.data?.matched, 'similarity:', res.data?.similarity, 'visitor:', res.data?.visitorName)
       setResult({
         data: {
           verified: res.data?.matched,

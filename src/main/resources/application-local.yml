@@ -12,7 +12,7 @@ aws:
     bucket-name: logbook360-face-dev
   rekognition:
     collection-prefix: logbook360-dev
-    similarity-threshold: 85.0
+    similarity-threshold: 75.0
 
 face-recognition:
   liveness:
