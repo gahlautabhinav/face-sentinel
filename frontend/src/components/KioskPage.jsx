@@ -10,7 +10,6 @@ const COUNTDOWN_START = 3
 const MEDIAPIPE_VERSION = '0.10.35'
 const SKIN_RB_THRESHOLD = 1.20   // skin is warm (R>B); phone backlight is cool (R≈B or R<B)
 const LOW_LIGHT_THRESHOLD = 30   // avg luminance 0-255; below = warn user
-const FAST_PATH_MIN_SIMILARITY = 93.0  // below this → liveness even if matched (catches high-quality video)
 const MOTION_CANVAS_W = 64
 const MOTION_CANVAS_H = 48
 
@@ -43,6 +42,7 @@ export default function KioskPage() {
   const textureCanvasRef = useRef(null)
   const faceCountRef = useRef(0)
   const detectionScoreRef = useRef(1)
+  const capturedBlobRef = useRef(null)
 
   const [phase, setPhase] = useState('idle')
   const [countdown, setCountdown] = useState(COUNTDOWN_START)
@@ -322,6 +322,39 @@ export default function KioskPage() {
     }
   }
 
+  async function captureFrameBlob() {
+    const video = videoRef.current
+    const box = faceBoxRef.current
+    if (!video) return null
+    const canvas = document.createElement('canvas')
+    if (box) {
+      const vw = video.videoWidth, vh = video.videoHeight
+      const sw = window.innerWidth, sh = window.innerHeight
+      const videoAspect = vw / vh, screenAspect = sw / sh
+      let scale, ox, oy
+      if (videoAspect > screenAspect) {
+        scale = sh / vh; ox = (sw - vw * scale) / 2; oy = 0
+      } else {
+        scale = sw / vw; ox = 0; oy = (sh - vh * scale) / 2
+      }
+      const padX = box.w * 0.2, padY = box.h * 0.2
+      let fx = (box.x - padX - ox) / scale
+      let fy = (box.y - padY - oy) / scale
+      let fw = (box.w + padX * 2) / scale
+      let fh = (box.h + padY * 2) / scale
+      if (fx < 0) { fw += fx; fx = 0 }
+      if (fy < 0) { fh += fy; fy = 0 }
+      fw = Math.min(fw, vw - fx)
+      fh = Math.min(fh, vh - fy)
+      canvas.width = 400; canvas.height = 400
+      canvas.getContext('2d').drawImage(video, fx, fy, fw, fh, 0, 0, 400, 400)
+    } else {
+      canvas.width = video.videoWidth; canvas.height = video.videoHeight
+      canvas.getContext('2d').drawImage(video, 0, 0)
+    }
+    return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.95))
+  }
+
   async function startScan() {
     const tenantId = getKioskTenantId()
     if (!tenantId) {
@@ -329,84 +362,12 @@ export default function KioskPage() {
       setTimeout(() => setLivenessError(null), 4000)
       return
     }
-    if (detectionScoreRef.current < 0.65) {
-      // Face occluded — countdown should have paused this but guard defensively
-      return
-    }
+    if (detectionScoreRef.current < 0.65) return
     const { variance, rbRatio } = computeFaceFeatures()
-    const looksReal = rbRatio > SKIN_RB_THRESHOLD
-    console.log('[scan] score:', detectionScoreRef.current.toFixed(2), 'rbRatio:', rbRatio.toFixed(2), 'texture:', Math.round(variance), 'looksReal:', looksReal)
-    if (looksReal) {
-      await captureAndIdentify(tenantId)
-    } else {
-      await startLiveness()
-    }
-  }
-
-  async function captureAndIdentify(tenantId) {
-    const video = videoRef.current
-    if (!video) return
-    setPhase('scanning')
-    await new Promise(resolve => setTimeout(resolve, 800))
-    setIdentifying(true)
-    try {
-      const canvas = document.createElement('canvas')
-      const box = faceBoxRef.current
-      if (box) {
-        // Crop face region in video-space and upscale to 400×400 for Rekognition
-        const vw = video.videoWidth, vh = video.videoHeight
-        const sw = window.innerWidth, sh = window.innerHeight
-        const videoAspect = vw / vh, screenAspect = sw / sh
-        let scale, ox, oy
-        if (videoAspect > screenAspect) {
-          scale = sh / vh; ox = (sw - vw * scale) / 2; oy = 0
-        } else {
-          scale = sw / vw; ox = 0; oy = (sh - vh * scale) / 2
-        }
-        // Crop face + 20% padding, clamp properly to video bounds
-        const padX = box.w * 0.2, padY = box.h * 0.2
-        let fx = (box.x - padX - ox) / scale
-        let fy = (box.y - padY - oy) / scale
-        let fw = (box.w + padX * 2) / scale
-        let fh = (box.h + padY * 2) / scale
-        if (fx < 0) { fw += fx; fx = 0 }
-        if (fy < 0) { fh += fy; fy = 0 }
-        fw = Math.min(fw, vw - fx)
-        fh = Math.min(fh, vh - fy)
-        canvas.width = 400; canvas.height = 400
-        canvas.getContext('2d').drawImage(video, fx, fy, fw, fh, 0, 0, 400, 400)
-        console.log('[identify] face crop:', Math.round(fx), Math.round(fy), Math.round(fw), Math.round(fh))
-      } else {
-        canvas.width = video.videoWidth
-        canvas.height = video.videoHeight
-        canvas.getContext('2d').drawImage(video, 0, 0)
-      }
-      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.95))
-      const res = await identifyFace({ tenantId, imageFile: blob })
-      const matched = res.data?.matched
-      const similarity = res.data?.similarity ?? 0
-      console.log('[identify] matched:', matched, 'similarity:', similarity.toFixed(1), 'visitor:', res.data?.visitorName)
-      if (matched && similarity >= FAST_PATH_MIN_SIMILARITY) {
-        // High-confidence match — real person, grant directly
-        setResult({
-          data: {
-            verified: true,
-            visitorName: res.data.visitorName,
-            similarity,
-          },
-        })
-        setPhase('result')
-        setTimeout(handleReset, AUTO_RESET_MS)
-      } else {
-        // No match OR borderline similarity (high-quality video risk) → liveness
-        setIdentifying(false)
-        await startLiveness()
-      }
-    } catch {
-      showErrorAndReset('Unable to identify — please try again')
-    } finally {
-      setIdentifying(false)
-    }
+    console.log('[scan] score:', detectionScoreRef.current.toFixed(2), 'rbRatio:', rbRatio.toFixed(2), 'texture:', Math.round(variance))
+    // Capture frame now — used as fallback identify image after liveness proves real person
+    capturedBlobRef.current = await captureFrameBlob()
+    await startLiveness()
   }
 
   useEffect(() => {
@@ -420,13 +381,43 @@ export default function KioskPage() {
     const tenantId = getKioskTenantId()
     setIdentifying(true)
     try {
-      const res = await identifyLive({ tenantId, sessionId: livenessSessionId })
+      // Primary: identify from liveness session image
+      const liveRes = await identifyLive({ tenantId, sessionId: livenessSessionId })
+      let matched = liveRes.data?.matched ?? false
+      let visitorName = liveRes.data?.visitorName ?? null
+      let similarity = liveRes.data?.similarity ?? 0
+      console.log('[liveness] identifyLive matched:', matched, 'similarity:', similarity)
+
+      // Fallback: if liveness image didn't match (challenge angle/crop issues),
+      // try the pre-captured frame — safe because liveness already proved this is a real person
+      if (!matched && capturedBlobRef.current) {
+        try {
+          const frameRes = await identifyFace({ tenantId, imageFile: capturedBlobRef.current })
+          if (frameRes.data?.matched) {
+            matched = true
+            visitorName = frameRes.data.visitorName
+            similarity = frameRes.data.similarity ?? 0
+            console.log('[liveness] fallback frame matched:', similarity)
+          }
+        } catch { /* fallback failed — keep liveness result */ }
+      } else if (matched && capturedBlobRef.current) {
+        // Both images available — try frame too, keep whichever has higher similarity
+        try {
+          const frameRes = await identifyFace({ tenantId, imageFile: capturedBlobRef.current })
+          if (frameRes.data?.matched && (frameRes.data?.similarity ?? 0) > similarity) {
+            visitorName = frameRes.data.visitorName
+            similarity = frameRes.data.similarity
+            console.log('[liveness] frame gave better similarity:', similarity)
+          }
+        } catch { /* ignore */ }
+      }
+
       setResult({
         data: {
-          verified: res.data?.matched,
-          visitorName: res.data?.visitorName,
-          similarity: res.data?.similarity,
-          notEnrolled: !res.data?.matched, // liveness passed = real person, no match = not enrolled
+          verified: matched,
+          visitorName,
+          similarity,
+          notEnrolled: !matched,
         },
       })
       setPhase('result')
@@ -436,6 +427,7 @@ export default function KioskPage() {
       showErrorAndReset('Not a real face — please try again')
     } finally {
       setIdentifying(false)
+      capturedBlobRef.current = null
     }
   }
 
@@ -445,6 +437,7 @@ export default function KioskPage() {
     motionScoreRef.current = 0
     prevPixelsRef.current = null
     faceCountRef.current = 0
+    capturedBlobRef.current = null
     setPhase('idle')
     setCountdown(COUNTDOWN_START)
     setLivenessSessionId(null)
@@ -464,6 +457,7 @@ export default function KioskPage() {
     motionScoreRef.current = 0
     prevPixelsRef.current = null
     faceCountRef.current = 0
+    capturedBlobRef.current = null
     setPhase('idle')
     setCountdown(COUNTDOWN_START)
     setLivenessSessionId(null)
