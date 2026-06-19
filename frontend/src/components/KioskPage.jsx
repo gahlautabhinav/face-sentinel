@@ -322,12 +322,16 @@ export default function KioskPage() {
         } else {
           scale = sw / vw; ox = 0; oy = (sh - vh * scale) / 2
         }
-        // Add 40% padding around face for Rekognition context
-        const padX = box.w * 0.4, padY = box.h * 0.4
-        const fx = Math.max(0, (box.x - padX - ox) / scale)
-        const fy = Math.max(0, (box.y - padY - oy) / scale)
-        const fw = Math.min((box.w + padX * 2) / scale, vw - fx)
-        const fh = Math.min((box.h + padY * 2) / scale, vh - fy)
+        // Crop face + 20% padding, clamp properly to video bounds
+        const padX = box.w * 0.2, padY = box.h * 0.2
+        let fx = (box.x - padX - ox) / scale
+        let fy = (box.y - padY - oy) / scale
+        let fw = (box.w + padX * 2) / scale
+        let fh = (box.h + padY * 2) / scale
+        if (fx < 0) { fw += fx; fx = 0 }
+        if (fy < 0) { fh += fy; fy = 0 }
+        fw = Math.min(fw, vw - fx)
+        fh = Math.min(fh, vh - fy)
         canvas.width = 400; canvas.height = 400
         canvas.getContext('2d').drawImage(video, fx, fy, fw, fh, 0, 0, 400, 400)
         console.log('[identify] face crop:', Math.round(fx), Math.round(fy), Math.round(fw), Math.round(fh))
