@@ -41,6 +41,7 @@ export default function KioskPage() {
   const motionScoreRef = useRef(0)
   const textureCanvasRef = useRef(null)
   const faceCountRef = useRef(0)
+  const detectionScoreRef = useRef(1)
 
   const [phase, setPhase] = useState('idle')
   const [countdown, setCountdown] = useState(COUNTDOWN_START)
@@ -52,6 +53,7 @@ export default function KioskPage() {
   const [faceBox, setFaceBox] = useState(null)
   const [faceCount, setFaceCount] = useState(0)
   const [lowLight, setLowLight] = useState(false)
+  const [faceOccluded, setFaceOccluded] = useState(false)
 
   // Camera + MediaPipe init
   useEffect(() => {
@@ -148,6 +150,11 @@ export default function KioskPage() {
         setCountdown(COUNTDOWN_START)
         return
       }
+      if (detectionScoreRef.current < 0.65) {
+        n = COUNTDOWN_START
+        setCountdown(COUNTDOWN_START)
+        return
+      }
       if (box && !isCentered(box)) {
         n = COUNTDOWN_START
         setCountdown(COUNTDOWN_START)
@@ -187,6 +194,9 @@ export default function KioskPage() {
             const largest = det.detections.reduce((best, d) =>
               d.boundingBox.width * d.boundingBox.height > best.boundingBox.width * best.boundingBox.height ? d : best
             )
+            const score = largest.categories?.[0]?.score ?? 1
+            detectionScoreRef.current = score
+            setFaceOccluded(score < 0.65)
             const bbox = largest.boundingBox
             const vw = video.videoWidth, vh = video.videoHeight
             const sw = window.innerWidth, sh = window.innerHeight
@@ -214,6 +224,8 @@ export default function KioskPage() {
             }
             setFaceBox({ ...current })
           } else {
+            detectionScoreRef.current = 1
+            setFaceOccluded(false)
             current = null
             setFaceBox(null)
           }
@@ -296,6 +308,19 @@ export default function KioskPage() {
     return { variance, rbRatio }
   }
 
+  async function startLiveness() {
+    try {
+      const res = await createLivenessSession('KIOSK')
+      setLivenessSessionId(res.data.sessionId)
+      setLivenessError(null)
+      setLivenessReady(false)
+      setPhase('scanning')
+    } catch {
+      setLivenessError('Unable to start — please try again')
+      setTimeout(() => setLivenessError(null), 3000)
+    }
+  }
+
   async function startScan() {
     const tenantId = getKioskTenantId()
     if (!tenantId) {
@@ -303,22 +328,17 @@ export default function KioskPage() {
       setTimeout(() => setLivenessError(null), 4000)
       return
     }
+    if (detectionScoreRef.current < 0.65) {
+      // Face occluded — countdown should have paused this but guard defensively
+      return
+    }
     const { variance, rbRatio } = computeFaceFeatures()
     const looksReal = rbRatio > SKIN_RB_THRESHOLD
-    console.log('[scan] rbRatio:', rbRatio.toFixed(2), 'texture:', Math.round(variance), 'looksReal:', looksReal)
+    console.log('[scan] score:', detectionScoreRef.current.toFixed(2), 'rbRatio:', rbRatio.toFixed(2), 'texture:', Math.round(variance), 'looksReal:', looksReal)
     if (looksReal) {
       await captureAndIdentify(tenantId)
     } else {
-      try {
-        const res = await createLivenessSession('KIOSK')
-        setLivenessSessionId(res.data.sessionId)
-        setLivenessError(null)
-        setLivenessReady(false)
-        setPhase('scanning')
-      } catch {
-        setLivenessError('Unable to start — please try again')
-        setTimeout(() => setLivenessError(null), 3000)
-      }
+      await startLiveness()
     }
   }
 
@@ -363,15 +383,21 @@ export default function KioskPage() {
       const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.95))
       const res = await identifyFace({ tenantId, imageFile: blob })
       console.log('[identify] matched:', res.data?.matched, 'similarity:', res.data?.similarity, 'visitor:', res.data?.visitorName)
-      setResult({
-        data: {
-          verified: res.data?.matched,
-          visitorName: res.data?.visitorName,
-          similarity: res.data?.similarity,
-        },
-      })
-      setPhase('result')
-      setTimeout(handleReset, AUTO_RESET_MS)
+      if (res.data?.matched) {
+        setResult({
+          data: {
+            verified: true,
+            visitorName: res.data.visitorName,
+            similarity: res.data.similarity,
+          },
+        })
+        setPhase('result')
+        setTimeout(handleReset, AUTO_RESET_MS)
+      } else {
+        // No match — verify with liveness before denying (real person may not be enrolled)
+        setIdentifying(false)
+        await startLiveness()
+      }
     } catch {
       showErrorAndReset('Unable to identify — please try again')
     } finally {
@@ -396,6 +422,7 @@ export default function KioskPage() {
           verified: res.data?.matched,
           visitorName: res.data?.visitorName,
           similarity: res.data?.similarity,
+          notEnrolled: !res.data?.matched, // liveness passed = real person, no match = not enrolled
         },
       })
       setPhase('result')
@@ -527,6 +554,15 @@ export default function KioskPage() {
                 <div style={{ fontSize: 18, fontWeight: 600, color: '#f59e0b', marginBottom: 4 }}>Poor lighting</div>
                 <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.35)' }}>
                   Move to a better lit area
+                </div>
+              </>
+            ) : faceOccluded ? (
+              <>
+                <div style={{ fontSize: 18, fontWeight: 600, color: '#f59e0b', marginBottom: 4 }}>
+                  Face not clearly visible
+                </div>
+                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.35)' }}>
+                  Remove mask, hand or covering
                 </div>
               </>
             ) : faceCount > 1 ? (

@@ -1,7 +1,8 @@
 export default function AccessResult({ result, onReset }) {
   const granted = result?.data?.verified === true
-  const color = granted ? '#34d399' : '#fb7185'
-  const colorDim = granted ? 'rgba(52,211,153,' : 'rgba(251,113,133,'
+  const notEnrolled = result?.data?.notEnrolled === true
+  const color = granted ? '#34d399' : notEnrolled ? '#fbbf24' : '#fb7185'
+  const colorDim = granted ? 'rgba(52,211,153,' : notEnrolled ? 'rgba(251,191,36,' : 'rgba(251,113,133,'
 
   return (
     <div style={{
@@ -10,7 +11,9 @@ export default function AccessResult({ result, onReset }) {
       alignItems: 'center', justifyContent: 'center',
       background: granted
         ? 'radial-gradient(ellipse 130% 90% at 50% 55%, #031a0e 0%, #020917 100%)'
-        : 'radial-gradient(ellipse 130% 90% at 50% 55%, #1a0309 0%, #020917 100%)',
+        : notEnrolled
+          ? 'radial-gradient(ellipse 130% 90% at 50% 55%, #1a1200 0%, #020917 100%)'
+          : 'radial-gradient(ellipse 130% 90% at 50% 55%, #1a0309 0%, #020917 100%)',
       animation: 'scaleIn 0.35s cubic-bezier(0.16, 1, 0.3, 1)',
       overflow: 'hidden',
     }}>
@@ -83,7 +86,7 @@ export default function AccessResult({ result, onReset }) {
         textShadow: `0 0 48px ${colorDim}0.35)`,
         lineHeight: 1,
       }}>
-        {granted ? 'Access Granted' : 'Access Denied'}
+        {granted ? 'Access Granted' : notEnrolled ? 'Not Enrolled' : 'Access Denied'}
       </div>
 
       {/* Visitor info */}
@@ -113,7 +116,7 @@ export default function AccessResult({ result, onReset }) {
           fontFamily: "'Manrope', sans-serif",
           textAlign: 'center', maxWidth: 280,
         }}>
-          Face not recognised in this tenant
+          {notEnrolled ? 'Please register at the reception desk' : 'Face not recognised in this tenant'}
         </div>
       )}
 
