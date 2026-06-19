@@ -27,20 +27,31 @@ Admin UI (React)
 
 Kiosk UI (React, WebRTC, MediaPipe)
   └── Frame-by-frame detection:
-        - Largest face selected (queue ordering)
+        - Largest face selected (queue ordering — closest person first)
         - Low-light warning if avg luminance < 30
         - Face covering detection via MediaPipe confidence score
-        - Phone/screen detection via R/B colour ratio
-  └── Decision tree:
-        score < 0.65  → pause, show "Remove face covering"
-        rbRatio ≤ 1.20 → liveness challenge (phone screen detected)
-        else → POST /api/face/identify (fast path)
-                 matched   → Access Granted (green)
-                 no match  → liveness challenge
-                               passes + matched → Access Granted
-                               passes + no match → Not Enrolled (amber)
-                               fails → Not a real face (error)
+        - Multiple-person detection — countdown pauses, closest scanned first
+  └── Always → liveness challenge (AWS Rekognition Face Liveness)
+        - Proves real person (defeats photos, video playback, phone screens)
+        - After challenge passes: dual-image identify
+            1. Pre-captured frame (captured when face centered + stable)
+            2. Liveness session image (fallback)
+        - matched      → Access Granted (green)
+        - no match     → "Face not recognized — try again" (retry prompt)
+        - liveness fail → "Not a real face" (error)
 ```
+
+### Why Always Liveness
+
+AWS Rekognition `SearchFacesByImage` matches face features but **cannot detect spoofing** — a high-quality photo or video on a phone screen can match an enrolled face with >90% similarity. The only reliable spoof defence is AWS Rekognition Face Liveness Challenge (3D depth + randomised challenge). Every scan goes through liveness regardless of image quality.
+
+### Dual-Image Identify
+
+After liveness passes, two identify attempts run:
+1. **Pre-captured frame** — captured when face was confirmed centered and stable, best angle for matching
+2. **Liveness session image** — captured during the oval challenge (may be off-angle), used as fallback
+
+Best similarity from either attempt wins. This prevents enrolled people from being rejected due to the liveness challenge's close-up oval angle.
 
 ### Multi-Tenant Collections
 
@@ -80,7 +91,7 @@ Two roles:
 | POST | `/api/face/verify` | KIOSK | Verify specific visitor (QR flow) |
 | POST | `/api/liveness/session` | ADMIN/KIOSK | Create liveness session |
 | GET | `/api/liveness/session/{id}/result` | ADMIN/KIOSK | Get liveness result |
-| POST | `/api/liveness/identify` | KIOSK | Identify from liveness session |
+| POST | `/api/liveness/identify` | KIOSK | Identify from liveness session image |
 
 All endpoints require `X-Tenant-Id: <uuid>` header (except `/api/auth/token`).
 
@@ -95,15 +106,15 @@ All responses use `ApiResponse<T>`:
 }
 ```
 
-### Example: Identify (Kiosk fast path)
+### Example: Identify After Liveness
 
 ```http
-POST /api/face/identify
+POST /api/liveness/identify
 Authorization: Bearer <kiosk-token>
 X-Tenant-Id: 550e8400-e29b-41d4-a716-446655440000
-Content-Type: multipart/form-data
+Content-Type: application/json
 
-image: <jpeg file>
+{ "sessionId": "abc-123-..." }
 ```
 
 Response:
@@ -131,6 +142,7 @@ Response:
 - Node.js 18+
 - AWS account — Rekognition + S3 + Face Liveness enabled in `ap-south-1`
 - IAM user with `AmazonRekognitionFullAccess` + `AmazonS3FullAccess`
+- Cognito Identity Pool (for frontend liveness SDK — see [DEPLOY.md](DEPLOY.md))
 
 ### Setup
 
@@ -222,8 +234,8 @@ Managed by Flyway. Migrations in `src/main/resources/db/migration/`.
 | `AWS_S3_BUCKET` | Yes | — | S3 bucket for face images |
 | `REKOGNITION_COLLECTION_PREFIX` | Yes | `logbook360` | Prefix for tenant collections |
 | `REKOGNITION_SIMILARITY_THRESHOLD` | No | `90.0` | Min similarity (0–100). Use 75–80 for local dev |
-| `FACE_LIVENESS_ENABLED` | No | `false` | Enable/disable liveness check on `/api/face/identify` |
-| `REKOGNITION_LIVENESS_CONFIDENCE_THRESHOLD` | No | `80.0` | Min liveness confidence |
+| `FACE_LIVENESS_ENABLED` | No | `false` | Backend liveness gate on `/api/face/identify` (kiosk handles liveness in UI, not needed here) |
+| `REKOGNITION_LIVENESS_CONFIDENCE_THRESHOLD` | No | `80.0` | Min liveness confidence score |
 | `JWT_SECRET` | Yes | — | HS256 key (min 32 chars) |
 | `JWT_EXPIRY_HOURS` | No | `24` | Token validity |
 | `ADMIN_CLIENT_ID` | Yes | — | Admin client ID |
@@ -262,27 +274,30 @@ frontend/src/
 | Phase | Feature | Status |
 |---|---|---|
 | 1 | Enroll / Identify / Delete REST API | **Complete** |
-| 2 | Kiosk UI — MediaPipe tracking, liveness, access result screen | **Complete** |
-| 3 | JWT Auth (ADMIN/KIOSK), Admin dashboard, smart kiosk detection | **Complete** |
+| 2 | Kiosk UI — MediaPipe tracking, liveness challenge, access result | **Complete** |
+| 3 | JWT Auth, Admin dashboard, smart queue + detection, spoof defence | **Complete** |
 | 4 | Production deploy — ECS Fargate, RDS, GitHub Actions CI/CD | Planned |
 
-### Kiosk Smart Detection (Phase 3 — Complete)
+### Kiosk Features (Phases 2–3 — Complete)
 
-- **Queue ordering** — largest face (closest) scanned first; countdown pauses with multiple people
-- **Low light detection** — warns user if scene is too dark
-- **Face covering detection** — countdown pauses + warning when hand/mask detected (MediaPipe confidence < 0.65)
-- **Phone screen detection** — R/B colour ratio gates phone/video/screen spoofing
-- **Fallback to liveness** — fast identify miss → liveness before showing access denied
-- **Not Enrolled state** — real person (liveness passed) but not in DB → amber "Not Enrolled" screen
+- **Always-liveness** — every scan goes through AWS Face Liveness Challenge. No bypass. Defeats photos, videos, and phone screens.
+- **Dual-image identify** — pre-captured stable frame (primary) + liveness session image (fallback). Best match wins. Handles angle variation from the oval challenge.
+- **Queue ordering** — largest detected face (closest to camera) scanned first. Countdown pauses when multiple people are in frame.
+- **Low-light warning** — warns user when average frame luminance < 30.
+- **Face covering detection** — countdown pauses with warning when MediaPipe confidence < 0.65 (hand or mask in front of face).
+- **Concurrent scan guard** — prevents duplicate liveness sessions from async race conditions.
+- **Camera exclusivity** — camera stream released before `FaceLivenessDetector` mounts, preventing WebRTC conflicts on repeated scans.
+- **Retry on no-match** — liveness pass + no identify match → "Face not recognized — try again" rather than a misleading "Not Enrolled" message.
 
 ---
 
 ## Security Notes
 
 - `.env` files are gitignored — never commit credentials
-- AWS credentials use `StaticCredentialsProvider` locally; production uses IAM task role (`DefaultCredentialsProvider`)
-- `spring-dotenv` only injects into Spring `Environment`, not `System.getenv()` — AWS SDK bypasses it. `AwsConfig.java` reads via `@Value` and constructs `StaticCredentialsProvider` explicitly
+- AWS credentials use `StaticCredentialsProvider` locally via `@Value`; production uses IAM task role (`DefaultCredentialsProvider`)
+- `spring-dotenv` only injects into Spring `Environment`, not `System.getenv()` — AWS SDK bypasses it. `AwsConfig.java` reads via `@Value` and constructs `StaticCredentialsProvider` explicitly. **Never revert this to plain `DefaultCredentialsProvider`.**
 - Similarity threshold defaults to 90.0 in prod; use 75.0–80.0 in dev for easier testing
+- Rekognition `SearchFacesByImage` cannot detect spoofing — the liveness challenge in the kiosk UI is the only reliable spoof defence
 
 ---
 

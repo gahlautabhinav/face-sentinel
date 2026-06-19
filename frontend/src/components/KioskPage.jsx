@@ -43,6 +43,8 @@ export default function KioskPage() {
   const faceCountRef = useRef(0)
   const detectionScoreRef = useRef(1)
   const capturedBlobRef = useRef(null)
+  const startingRef = useRef(false)
+  const handleCompleteRef = useRef(false)
 
   const [phase, setPhase] = useState('idle')
   const [countdown, setCountdown] = useState(COUNTDOWN_START)
@@ -106,10 +108,13 @@ export default function KioskPage() {
     const comingFromScan = prevPhaseRef.current === 'scanning'
     prevPhaseRef.current = phase
 
+    let cancelled = false
+
     const tracks = streamRef.current?.getTracks() || []
     if (tracks.length === 0 || tracks.some(t => t.readyState === 'ended')) {
       navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 1280, height: 720 } })
         .then(stream => {
+          if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
           streamRef.current = stream
           if (videoRef.current) videoRef.current.srcObject = stream
         })
@@ -124,6 +129,7 @@ export default function KioskPage() {
           const vision = await FilesetResolver.forVisionTasks(
             `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`
           )
+          if (cancelled) return
           faceDetectorRef.current = await MPFaceDetector.createFromOptions(vision, {
             baseOptions: {
               modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
@@ -136,6 +142,8 @@ export default function KioskPage() {
       }
       reinitDetector()
     }
+
+    return () => { cancelled = true }
   }, [phase])
 
   // Countdown — pauses and resets when face detected but off-center
@@ -310,6 +318,13 @@ export default function KioskPage() {
   }
 
   async function startLiveness() {
+    // Release our camera stream before FaceLivenessDetector acquires it.
+    // Prevents concurrent getUserMedia conflict that crashes the liveness component.
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop())
+      if (videoRef.current) videoRef.current.srcObject = null
+      streamRef.current = null
+    }
     try {
       const res = await createLivenessSession('KIOSK')
       setLivenessSessionId(res.data.sessionId)
@@ -356,68 +371,91 @@ export default function KioskPage() {
   }
 
   async function startScan() {
-    const tenantId = getKioskTenantId()
-    if (!tenantId) {
-      setLivenessError('Kiosk not configured — VITE_TENANT_ID missing')
-      setTimeout(() => setLivenessError(null), 4000)
-      return
+    if (startingRef.current) return
+    startingRef.current = true
+    try {
+      const tenantId = getKioskTenantId()
+      if (!tenantId) {
+        setLivenessError('Kiosk not configured — VITE_TENANT_ID missing')
+        setTimeout(() => setLivenessError(null), 4000)
+        return
+      }
+      if (detectionScoreRef.current < 0.65) return
+      const { variance, rbRatio } = computeFaceFeatures()
+      console.log('[scan] score:', detectionScoreRef.current.toFixed(2), 'rbRatio:', rbRatio.toFixed(2), 'texture:', Math.round(variance))
+      // Capture fallback frame if not already captured at n=1 tick
+      if (!capturedBlobRef.current) {
+        capturedBlobRef.current = await captureFrameBlob()
+      }
+      // Abort if something reset state while we were capturing
+      if (handlingErrorRef.current) return
+      await startLiveness()
+    } finally {
+      startingRef.current = false
     }
-    if (detectionScoreRef.current < 0.65) return
-    const { variance, rbRatio } = computeFaceFeatures()
-    console.log('[scan] score:', detectionScoreRef.current.toFixed(2), 'rbRatio:', rbRatio.toFixed(2), 'texture:', Math.round(variance))
-    // Capture frame now — used as fallback identify image after liveness proves real person
-    capturedBlobRef.current = await captureFrameBlob()
-    await startLiveness()
   }
 
   useEffect(() => {
     if (phase !== 'scanning' || !livenessSessionId) return
     setLivenessReady(false)
-    const t = setTimeout(() => setLivenessReady(true), 2000)
+    const t = setTimeout(() => setLivenessReady(true), 800)
     return () => clearTimeout(t)
   }, [phase, livenessSessionId])
 
   async function handleLivenessComplete() {
+    if (handleCompleteRef.current) return
+    handleCompleteRef.current = true
     const tenantId = getKioskTenantId()
     setIdentifying(true)
     try {
-      // Primary: identify from liveness session image
-      const liveRes = await identifyLive({ tenantId, sessionId: livenessSessionId })
-      let matched = liveRes.data?.matched ?? false
-      let visitorName = liveRes.data?.visitorName ?? null
-      let similarity = liveRes.data?.similarity ?? 0
-      console.log('[liveness] identifyLive matched:', matched, 'similarity:', similarity)
+      let matched = false
+      let visitorName = null
+      let similarity = 0
 
-      // Fallback: if liveness image didn't match (challenge angle/crop issues),
-      // try the pre-captured frame — safe because liveness already proved this is a real person
-      if (!matched && capturedBlobRef.current) {
+      // Primary: pre-captured frame (taken at n=1 tick — face centered + stable)
+      // Much better angle than liveness challenge oval image
+      if (capturedBlobRef.current) {
         try {
           const frameRes = await identifyFace({ tenantId, imageFile: capturedBlobRef.current })
           if (frameRes.data?.matched) {
             matched = true
             visitorName = frameRes.data.visitorName
             similarity = frameRes.data.similarity ?? 0
-            console.log('[liveness] fallback frame matched:', similarity)
+            console.log('[liveness] pre-captured frame matched:', similarity)
           }
-        } catch { /* fallback failed — keep liveness result */ }
-      } else if (matched && capturedBlobRef.current) {
-        // Both images available — try frame too, keep whichever has higher similarity
-        try {
-          const frameRes = await identifyFace({ tenantId, imageFile: capturedBlobRef.current })
-          if (frameRes.data?.matched && (frameRes.data?.similarity ?? 0) > similarity) {
-            visitorName = frameRes.data.visitorName
-            similarity = frameRes.data.similarity
-            console.log('[liveness] frame gave better similarity:', similarity)
-          }
-        } catch { /* ignore */ }
+        } catch { /* network error — will try liveness image next */ }
       }
 
+      // Always call identifyLive — REQUIRED to verify liveness session result (throws if liveness failed)
+      // Also acts as secondary identify using challenge image; keep if better similarity
+      try {
+        const liveRes = await identifyLive({ tenantId, sessionId: livenessSessionId })
+        if (liveRes.data?.matched) {
+          const liveSim = liveRes.data.similarity ?? 0
+          if (!matched || liveSim > similarity) {
+            matched = true
+            visitorName = liveRes.data.visitorName
+            similarity = liveSim
+            console.log('[liveness] identifyLive matched:', liveSim)
+          }
+        }
+      } catch (e) {
+        // identifyLive throws when liveness session was not PASS (not a real person / challenge failed)
+        // If pre-captured already found a match, liveness image just didn't match — still a real person
+        if (!matched) throw e
+      }
+
+      if (!matched) {
+        // Liveness passed (real person) but couldn't identify — could be bad angle, not truly not enrolled
+        // Show retry message rather than "Not Enrolled" (can't distinguish the two from frontend)
+        showErrorAndReset('Face not recognized — look directly at camera and try again')
+        return
+      }
       setResult({
         data: {
-          verified: matched,
+          verified: true,
           visitorName,
           similarity,
-          notEnrolled: !matched,
         },
       })
       setPhase('result')
@@ -438,6 +476,8 @@ export default function KioskPage() {
     prevPixelsRef.current = null
     faceCountRef.current = 0
     capturedBlobRef.current = null
+    startingRef.current = false
+    handleCompleteRef.current = false
     setPhase('idle')
     setCountdown(COUNTDOWN_START)
     setLivenessSessionId(null)
@@ -458,6 +498,8 @@ export default function KioskPage() {
     prevPixelsRef.current = null
     faceCountRef.current = 0
     capturedBlobRef.current = null
+    startingRef.current = false
+    handleCompleteRef.current = false
     setPhase('idle')
     setCountdown(COUNTDOWN_START)
     setLivenessSessionId(null)

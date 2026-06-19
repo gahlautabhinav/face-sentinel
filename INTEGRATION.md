@@ -132,7 +132,7 @@ X-Tenant-Id: <tenantId>
 
 ## Mode 2 — Kiosk UI Embed
 
-Embed the kiosk React page in your frontend. The kiosk runs fully standalone — it detects faces, decides fast-path vs liveness, and shows the result screen.
+Embed the kiosk React page in your frontend. The kiosk runs fully standalone — it detects faces, runs the liveness challenge on every scan, and shows the result screen.
 
 ### Option A: Iframe
 
@@ -358,8 +358,10 @@ aws:
 | `401 Unauthorized` | Token expired or wrong credentials | Re-fetch token; check client ID/secret |
 | `403 Forbidden` | Wrong role (ADMIN endpoint called with KIOSK token) | Use correct token for endpoint |
 | `404` on identify | Rekognition face ID exists but no DB record | Orphaned face — re-enroll visitor |
-| `matched: false` for known person | Similarity below threshold | Lower threshold in dev; check image quality |
-| Liveness "TIMEOUT" | User too slow or face not visible | Instruct user to remove coverings, better lighting |
+| `matched: false` for known person | Similarity below threshold or bad angle during challenge | Lower threshold in dev (`75.0`); ensure enrolment photo is well-lit and front-facing |
+| Liveness "TIMEOUT" | User too slow or face not visible | Instruct user to remove coverings, use better lighting |
+| Liveness glitches / exits immediately | Camera conflict — two streams racing | Ensure only one browser tab is open; hard reload clears WebRTC state |
+| "Face not recognized — try again" for enrolled person | Both identify images (pre-captured + liveness) below threshold | Look directly at camera during countdown; ensure enrolment photo is high quality |
 | AWS credentials error | `spring-dotenv` only injects into Spring env, not `System.getenv()` | Use `@Value` in `AwsConfig` — already implemented |
 | Kiosk shows "Poor lighting" | Avg frame luminance < 30 | Improve ambient lighting at kiosk location |
 | Face covering warning always on | MediaPipe confidence < 0.65 | Check lighting; ensure face is fully visible |
