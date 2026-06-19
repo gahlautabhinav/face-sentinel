@@ -8,9 +8,8 @@ import '@aws-amplify/ui-react/styles.css'
 const AUTO_RESET_MS = 10000
 const COUNTDOWN_START = 3
 const MEDIAPIPE_VERSION = '0.10.35'
-const MOTION_THRESHOLD = 0.006    // kept for reference, not used in looksReal
-const TEXTURE_THRESHOLD = 1500   // real skin 1800+; phone screen/video ~1150
-const SKIN_RB_THRESHOLD = 1.37   // real skin 1.40–1.48; phone screen ~1.34
+const SKIN_RB_THRESHOLD = 1.20   // skin is warm (R>B); phone backlight is cool (R≈B or R<B)
+const LOW_LIGHT_THRESHOLD = 30   // avg luminance 0-255; below = warn user
 const MOTION_CANVAS_W = 64
 const MOTION_CANVAS_H = 48
 
@@ -41,6 +40,7 @@ export default function KioskPage() {
   const prevPixelsRef = useRef(null)
   const motionScoreRef = useRef(0)
   const textureCanvasRef = useRef(null)
+  const faceCountRef = useRef(0)
 
   const [phase, setPhase] = useState('idle')
   const [countdown, setCountdown] = useState(COUNTDOWN_START)
@@ -50,6 +50,8 @@ export default function KioskPage() {
   const [result, setResult] = useState(null)
   const [identifying, setIdentifying] = useState(false)
   const [faceBox, setFaceBox] = useState(null)
+  const [faceCount, setFaceCount] = useState(0)
+  const [lowLight, setLowLight] = useState(false)
 
   // Camera + MediaPipe init
   useEffect(() => {
@@ -141,6 +143,11 @@ export default function KioskPage() {
     let n = COUNTDOWN_START
     countdownRef.current = setInterval(() => {
       const box = faceBoxRef.current
+      if (faceCountRef.current > 1) {
+        n = COUNTDOWN_START
+        setCountdown(COUNTDOWN_START)
+        return
+      }
       if (box && !isCentered(box)) {
         n = COUNTDOWN_START
         setCountdown(COUNTDOWN_START)
@@ -172,8 +179,15 @@ export default function KioskPage() {
       if (video && video.readyState >= 2 && faceDetectorRef.current) {
         try {
           const det = faceDetectorRef.current.detectForVideo(video, performance.now())
-          if (det.detections.length > 0) {
-            const bbox = det.detections[0].boundingBox
+          const count = det.detections.length
+          faceCountRef.current = count
+          setFaceCount(count)
+          if (count > 0) {
+            // Pick largest face (closest to camera) for queue ordering
+            const largest = det.detections.reduce((best, d) =>
+              d.boundingBox.width * d.boundingBox.height > best.boundingBox.width * best.boundingBox.height ? d : best
+            )
+            const bbox = largest.boundingBox
             const vw = video.videoWidth, vh = video.videoHeight
             const sw = window.innerWidth, sh = window.innerHeight
             const videoAspect = vw / vh
@@ -206,24 +220,30 @@ export default function KioskPage() {
         } catch (e) { console.warn('[MediaPipe] detectForVideo error:', e) }
       }
 
-      // Motion detection — downsample to 64×48, EMA-smooth frame diff
+      // Downsample frame for motion + luminance
       if (video && video.readyState >= 2 && motionCanvasRef.current) {
         const mc = motionCanvasRef.current
         const ctx = mc.getContext('2d', { willReadFrequently: true })
         ctx.drawImage(video, 0, 0, MOTION_CANVAS_W, MOTION_CANVAS_H)
         const { data } = ctx.getImageData(0, 0, MOTION_CANVAS_W, MOTION_CANVAS_H)
-        const curr = new Uint8Array(MOTION_CANVAS_W * MOTION_CANVAS_H)
-        for (let i = 0; i < curr.length; i++) {
+        const n = MOTION_CANVAS_W * MOTION_CANVAS_H
+        const curr = new Uint8Array(n)
+        let lumSum = 0
+        for (let i = 0; i < n; i++) {
           const p = i * 4
-          curr[i] = (data[p] * 77 + data[p + 1] * 150 + data[p + 2] * 29) >> 8
+          const lum = (data[p] * 77 + data[p + 1] * 150 + data[p + 2] * 29) >> 8
+          curr[i] = lum
+          lumSum += lum
         }
+        // Low light detection
+        setLowLight(lumSum / n < LOW_LIGHT_THRESHOLD)
+        // Motion EMA
         if (prevPixelsRef.current) {
           let diff = 0
-          for (let i = 0; i < curr.length; i++) {
+          for (let i = 0; i < n; i++) {
             if (Math.abs(curr[i] - prevPixelsRef.current[i]) > 20) diff++
           }
-          const raw = diff / curr.length
-          motionScoreRef.current = motionScoreRef.current * 0.7 + raw * 0.3
+          motionScoreRef.current = motionScoreRef.current * 0.7 + (diff / n) * 0.3
         }
         prevPixelsRef.current = curr
       }
@@ -284,8 +304,8 @@ export default function KioskPage() {
       return
     }
     const { variance, rbRatio } = computeFaceFeatures()
-    const looksReal = variance > TEXTURE_THRESHOLD && rbRatio > SKIN_RB_THRESHOLD
-    console.log('[scan] motion:', motionScoreRef.current.toFixed(3), 'texture:', Math.round(variance), 'rbRatio:', rbRatio.toFixed(2), 'looksReal:', looksReal)
+    const looksReal = rbRatio > SKIN_RB_THRESHOLD
+    console.log('[scan] rbRatio:', rbRatio.toFixed(2), 'texture:', Math.round(variance), 'looksReal:', looksReal)
     if (looksReal) {
       await captureAndIdentify(tenantId)
     } else {
@@ -393,6 +413,7 @@ export default function KioskPage() {
     cancelAnimationFrame(rafRef.current)
     motionScoreRef.current = 0
     prevPixelsRef.current = null
+    faceCountRef.current = 0
     setPhase('idle')
     setCountdown(COUNTDOWN_START)
     setLivenessSessionId(null)
@@ -401,6 +422,7 @@ export default function KioskPage() {
     setResult(null)
     setIdentifying(false)
     setFaceBox(null)
+    setFaceCount(0)
   }
 
   function showErrorAndReset(msg) {
@@ -410,6 +432,7 @@ export default function KioskPage() {
     cancelAnimationFrame(rafRef.current)
     motionScoreRef.current = 0
     prevPixelsRef.current = null
+    faceCountRef.current = 0
     setPhase('idle')
     setCountdown(COUNTDOWN_START)
     setLivenessSessionId(null)
@@ -417,6 +440,7 @@ export default function KioskPage() {
     setResult(null)
     setIdentifying(false)
     setFaceBox(null)
+    setFaceCount(0)
     setLivenessError(msg)
     setTimeout(() => {
       setLivenessError(null)
@@ -497,6 +521,22 @@ export default function KioskPage() {
               <>
                 <div style={{ fontSize: 16, fontWeight: 600, color: '#f87171', marginBottom: 4 }}>{livenessError}</div>
                 <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.3)' }}>Restarting…</div>
+              </>
+            ) : lowLight ? (
+              <>
+                <div style={{ fontSize: 18, fontWeight: 600, color: '#f59e0b', marginBottom: 4 }}>Poor lighting</div>
+                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.35)' }}>
+                  Move to a better lit area
+                </div>
+              </>
+            ) : faceCount > 1 ? (
+              <>
+                <div style={{ fontSize: 18, fontWeight: 600, color: '#f59e0b', marginBottom: 4 }}>
+                  Multiple people detected
+                </div>
+                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.35)' }}>
+                  Please queue — scanning closest person first
+                </div>
               </>
             ) : faceFound && !centered ? (
               <>
