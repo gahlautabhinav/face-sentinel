@@ -10,6 +10,7 @@ const COUNTDOWN_START = 3
 const MEDIAPIPE_VERSION = '0.10.35'
 const SKIN_RB_THRESHOLD = 1.20   // skin is warm (R>B); phone backlight is cool (R≈B or R<B)
 const LOW_LIGHT_THRESHOLD = 30   // avg luminance 0-255; below = warn user
+const FAST_PATH_MIN_SIMILARITY = 93.0  // below this → liveness even if matched (catches high-quality video)
 const MOTION_CANVAS_W = 64
 const MOTION_CANVAS_H = 48
 
@@ -382,19 +383,22 @@ export default function KioskPage() {
       }
       const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.95))
       const res = await identifyFace({ tenantId, imageFile: blob })
-      console.log('[identify] matched:', res.data?.matched, 'similarity:', res.data?.similarity, 'visitor:', res.data?.visitorName)
-      if (res.data?.matched) {
+      const matched = res.data?.matched
+      const similarity = res.data?.similarity ?? 0
+      console.log('[identify] matched:', matched, 'similarity:', similarity.toFixed(1), 'visitor:', res.data?.visitorName)
+      if (matched && similarity >= FAST_PATH_MIN_SIMILARITY) {
+        // High-confidence match — real person, grant directly
         setResult({
           data: {
             verified: true,
             visitorName: res.data.visitorName,
-            similarity: res.data.similarity,
+            similarity,
           },
         })
         setPhase('result')
         setTimeout(handleReset, AUTO_RESET_MS)
       } else {
-        // No match — verify with liveness before denying (real person may not be enrolled)
+        // No match OR borderline similarity (high-quality video risk) → liveness
         setIdentifying(false)
         await startLiveness()
       }
