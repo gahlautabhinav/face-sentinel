@@ -132,6 +132,7 @@ export default function KioskPage() {
   const samplingRef = useRef(false)
   const lastSampleAtRef = useRef(0)
   const fastBlockedUntilRef = useRef(0)
+  const fastBlockReasonRef = useRef('')
   const frameCanvasRef = useRef(null)
   const noMatchRef = useRef(0)
   const resetTimerRef = useRef(null)
@@ -387,8 +388,12 @@ export default function KioskPage() {
     }
   }, [phase])
 
-  function blockFastPath(ms) {
-    fastBlockedUntilRef.current = Math.max(fastBlockedUntilRef.current, performance.now() + ms)
+  function blockFastPath(ms, reason) {
+    const until = performance.now() + ms
+    if (until > fastBlockedUntilRef.current) {
+      fastBlockedUntilRef.current = until
+      fastBlockReasonRef.current = reason
+    }
     samplesRef.current = []
   }
 
@@ -408,7 +413,7 @@ export default function KioskPage() {
             : !fast.landmarker ? 'face landmarker not loaded (yet)'
               : state !== 'ready' ? `kiosk state is "${state}", needs "ready"`
                 : dark ? 'low light'
-                  : `cooldown, ${Math.ceil((fastBlockedUntilRef.current - now) / 1000)} s left`))
+                  : `off for ${Math.ceil((fastBlockedUntilRef.current - now) / 1000)} s more\nreason: ${fastBlockReasonRef.current}`))
       }
       return
     }
@@ -441,8 +446,9 @@ export default function KioskPage() {
         const verdict = fastPathVerdict(samples)
         if (DEBUG) setDebugText(describeFastPath(sample, samples, verdict, box, frame))
         if (verdict.spoof) {
-          console.warn('[fast path] spoof frame, live score', sample.live.toFixed(2))
-          blockFastPath(FAST_PATH_COOLDOWN_MS)
+          const scores = `close-up model ${sample.liveNear.toFixed(2)}, wide model ${sample.liveWide.toFixed(2)}`
+          console.warn(`[fast path] spoof frame: ${scores}`)
+          blockFastPath(FAST_PATH_COOLDOWN_MS, `the anti-spoof models called this a spoof (${scores})`)
         } else if (verdict.pass) {
           return fastIdentify(frame, box)
         }
@@ -664,7 +670,7 @@ export default function KioskPage() {
     handlingErrorRef.current = true
     attemptRef.current++
     // A scan that ended without a result earns no immediate second try at the fast path
-    blockFastPath(fastCooldownMs)
+    blockFastPath(fastCooldownMs, `the previous scan ended with "${msg}"`)
     setFastChecking(false)
     clearInterval(countdownRef.current)
     cancelAnimationFrame(rafRef.current)
