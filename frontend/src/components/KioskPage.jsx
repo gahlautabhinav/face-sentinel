@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState } from 'react'
 import { FaceDetector as MPFaceDetector, FilesetResolver } from '@mediapipe/tasks-vision'
 import { createLivenessSession, identifyLive, identifyFace } from '../api/faceApi.js'
+import { idleState, frontFace } from '../kioskLogic.mjs'
 import AccessResult from './AccessResult.jsx'
 import { FaceLivenessDetector } from '@aws-amplify/ui-react-liveness'
 import '@aws-amplify/ui-react/styles.css'
@@ -8,13 +9,44 @@ import '@aws-amplify/ui-react/styles.css'
 const AUTO_RESET_MS = 10000
 const COUNTDOWN_START = 3
 const MEDIAPIPE_VERSION = '0.10.35'
-const SKIN_RB_THRESHOLD = 1.20   // skin is warm (R>B); phone backlight is cool (R≈B or R<B)
+const MEDIAPIPE_WASM = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`
+const FACE_DETECTOR_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite'
+const CAMERA_CONSTRAINTS = { video: { facingMode: 'user', width: 1280, height: 720 } }
 const LOW_LIGHT_THRESHOLD = 30   // avg luminance 0-255; below = warn user
-const MOTION_CANVAS_W = 64
-const MOTION_CANVAS_H = 48
+const LUM_CANVAS_W = 64
+const LUM_CANVAS_H = 48
+const DETECT_ERROR_LIMIT = 30    // consecutive failed frames before the detector counts as broken
+
+// Message per idle state (see idleState in kioskLogic.mjs). 'ready' is rendered with the countdown.
+const IDLE_TEXT = {
+  no_camera: ['Camera unavailable', 'Allow camera access for this page, then retry'],
+  detector_unavailable: ['Face detection offline', 'Check the network connection, or scan manually'],
+  no_face: ['Stand in front of the camera', 'Scanning starts when your face is in view'],
+  occluded: ['Face not clearly visible', 'Remove mask, hand or covering'],
+  crowded: ['One at a time', 'Others please step back'],
+  off_center: ['Move to center', 'Position your face within the brackets'],
+}
+
+const idleButtonStyle = {
+  marginTop: 14, padding: '10px 32px', fontSize: 14, fontWeight: 700,
+  background: 'rgba(59,130,246,0.18)', color: '#e8edf5',
+  border: '1px solid rgba(59,130,246,0.55)', borderRadius: 10, cursor: 'pointer',
+}
 
 function getKioskTenantId() {
   return import.meta.env.VITE_TENANT_ID
+}
+
+// How object-fit: cover scales and offsets the video on screen.
+function coverTransform(video) {
+  const vw = video.videoWidth, vh = video.videoHeight
+  const sw = window.innerWidth, sh = window.innerHeight
+  if (vw / vh > sw / sh) {
+    const scale = sh / vh
+    return { scale, ox: (sw - vw * scale) / 2, oy: 0 }
+  }
+  const scale = sw / vw
+  return { scale, ox: 0, oy: (sh - vh * scale) / 2 }
 }
 
 function isCentered(faceBox) {
@@ -36,12 +68,10 @@ export default function KioskPage() {
   const faceBoxRef = useRef(null)
   const prevPhaseRef = useRef('idle')
   const handlingErrorRef = useRef(false)
-  const motionCanvasRef = useRef(null)
-  const prevPixelsRef = useRef(null)
-  const motionScoreRef = useRef(0)
-  const textureCanvasRef = useRef(null)
-  const faceCountRef = useRef(0)
-  const detectionScoreRef = useRef(1)
+  const lumCanvasRef = useRef(null)
+  const cameraOkRef = useRef(true)
+  const detectorRef = useRef('loading')   // 'loading' | 'ready' | 'failed'
+  const idleRef = useRef('no_face')
   const capturedBlobRef = useRef(null)
   const startingRef = useRef(false)
   const handleCompleteRef = useRef(false)
@@ -54,117 +84,84 @@ export default function KioskPage() {
   const [result, setResult] = useState(null)
   const [identifying, setIdentifying] = useState(false)
   const [faceBox, setFaceBox] = useState(null)
-  const [faceCount, setFaceCount] = useState(0)
+  const [idle, setIdle] = useState('no_face')
+  const [othersBehind, setOthersBehind] = useState(false)
   const [lowLight, setLowLight] = useState(false)
-  const [faceOccluded, setFaceOccluded] = useState(false)
 
-  // Camera + MediaPipe init
-  useEffect(() => {
-    const mc = document.createElement('canvas')
-    mc.width = MOTION_CANVAS_W; mc.height = MOTION_CANVAS_H
-    motionCanvasRef.current = mc
-    const tc = document.createElement('canvas')
-    textureCanvasRef.current = tc
-
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 1280, height: 720 } })
-      .then(stream => {
-        streamRef.current = stream
-        if (videoRef.current) videoRef.current.srcObject = stream
-      })
-      .catch(() => { })
-
-    let mounted = true
-    async function initDetector() {
-      try {
-        const vision = await FilesetResolver.forVisionTasks(
-          `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`
-        )
-        if (!mounted) return
-        faceDetectorRef.current = await MPFaceDetector.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
-            delegate: 'GPU',
-          },
-          runningMode: 'VIDEO',
-        })
-      } catch { /* face detection unavailable — brackets stay centered */ }
+  async function acquireCamera(isCancelled = () => false) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(CAMERA_CONSTRAINTS)
+      if (isCancelled()) { stream.getTracks().forEach(t => t.stop()); return }
+      streamRef.current = stream
+      if (videoRef.current) videoRef.current.srcObject = stream
+      // Fires when the camera is unplugged or its permission revoked; our own stop() does not fire it.
+      stream.getVideoTracks()[0].onended = () => {
+        if (streamRef.current === stream) cameraOkRef.current = false
+      }
+      cameraOkRef.current = true
+    } catch (e) {
+      console.error('[camera] unavailable:', e)
+      if (!isCancelled()) cameraOkRef.current = false
     }
-    initDetector()
+  }
+
+  async function initDetector(isCancelled = () => false) {
+    detectorRef.current = 'loading'
+    try {
+      if (faceDetectorRef.current) { faceDetectorRef.current.close(); faceDetectorRef.current = null }
+      const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM)
+      const detector = await MPFaceDetector.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: FACE_DETECTOR_MODEL, delegate: 'GPU' },
+        runningMode: 'VIDEO',
+      })
+      if (isCancelled()) { detector.close(); return }
+      faceDetectorRef.current = detector
+      detectorRef.current = 'ready'
+    } catch (e) {
+      console.error('[MediaPipe] init failed:', e)
+      if (!isCancelled()) detectorRef.current = 'failed'
+    }
+  }
+
+  useEffect(() => {
+    const lc = document.createElement('canvas')
+    lc.width = LUM_CANVAS_W; lc.height = LUM_CANVAS_H
+    lumCanvasRef.current = lc
 
     return () => {
-      mounted = false
       if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop())
       cancelAnimationFrame(rafRef.current)
     }
   }, [])
 
-  // Keep ref in sync so countdown interval can read latest faceBox
+  // Keep ref in sync so captureFrameBlob can read the latest faceBox
   useEffect(() => { faceBoxRef.current = faceBox }, [faceBox])
 
-  // On return from scanning: reinit camera stream if dead + reinit MediaPipe detector
-  // FaceLivenessDetector stops camera tracks and corrupts MediaPipe state on unmount
+  // Entering idle (first mount, or back from a scan): make sure camera and face detector are alive.
+  // FaceLivenessDetector stops camera tracks and corrupts MediaPipe state on unmount.
   useEffect(() => {
     if (phase !== 'idle') { prevPhaseRef.current = phase; return }
-    const comingFromScan = prevPhaseRef.current === 'scanning'
+    const backFromScan = prevPhaseRef.current !== 'idle'
     prevPhaseRef.current = phase
 
     let cancelled = false
+    const isCancelled = () => cancelled
 
     const tracks = streamRef.current?.getTracks() || []
-    if (tracks.length === 0 || tracks.some(t => t.readyState === 'ended')) {
-      navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 1280, height: 720 } })
-        .then(stream => {
-          if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
-          streamRef.current = stream
-          if (videoRef.current) videoRef.current.srcObject = stream
-        })
-        .catch(() => { })
-    }
-
-    if (comingFromScan) {
-      async function reinitDetector() {
-        console.log('[MediaPipe] reinit start')
-        try {
-          if (faceDetectorRef.current) { faceDetectorRef.current.close(); faceDetectorRef.current = null }
-          const vision = await FilesetResolver.forVisionTasks(
-            `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`
-          )
-          if (cancelled) return
-          faceDetectorRef.current = await MPFaceDetector.createFromOptions(vision, {
-            baseOptions: {
-              modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
-              delegate: 'GPU',
-            },
-            runningMode: 'VIDEO',
-          })
-          console.log('[MediaPipe] reinit done')
-        } catch (e) { console.error('[MediaPipe] reinit failed:', e) }
-      }
-      reinitDetector()
-    }
+    if (tracks.length === 0 || tracks.some(t => t.readyState === 'ended')) acquireCamera(isCancelled)
+    if (backFromScan || !faceDetectorRef.current) initDetector(isCancelled)
 
     return () => { cancelled = true }
   }, [phase])
 
-  // Countdown — pauses and resets when face detected but off-center
+  // Countdown — only advances while a single clear, centered face is in front of the camera
   useEffect(() => {
     if (phase !== 'idle') return
     if (livenessError) return
     setCountdown(COUNTDOWN_START)
     let n = COUNTDOWN_START
     countdownRef.current = setInterval(() => {
-      const box = faceBoxRef.current
-      if (faceCountRef.current > 1) {
-        n = COUNTDOWN_START
-        setCountdown(COUNTDOWN_START)
-        return
-      }
-      if (detectionScoreRef.current < 0.65) {
-        n = COUNTDOWN_START
-        setCountdown(COUNTDOWN_START)
-        return
-      }
-      if (box && !isCentered(box)) {
+      if (idleRef.current !== 'ready') {
         n = COUNTDOWN_START
         setCountdown(COUNTDOWN_START)
         return
@@ -186,87 +183,83 @@ export default function KioskPage() {
       return
     }
 
-    let current = null
+    let current = null      // smoothed on-screen box of the front face
+    let detectErrors = 0
     let cancelled = false
 
     function tick() {
       if (cancelled) return
       const video = videoRef.current
-      if (video && video.readyState >= 2 && faceDetectorRef.current) {
+      const videoReady = video && video.readyState >= 2
+      let faces = []
+      let front = null
+
+      if (videoReady && faceDetectorRef.current) {
         try {
           const det = faceDetectorRef.current.detectForVideo(video, performance.now())
-          const count = det.detections.length
-          faceCountRef.current = count
-          setFaceCount(count)
-          if (count > 0) {
-            // Pick largest face (closest to camera) for queue ordering
-            const largest = det.detections.reduce((best, d) =>
-              d.boundingBox.width * d.boundingBox.height > best.boundingBox.width * best.boundingBox.height ? d : best
-            )
-            const score = largest.categories?.[0]?.score ?? 1
-            detectionScoreRef.current = score
-            setFaceOccluded(score < 0.65)
-            const bbox = largest.boundingBox
-            const vw = video.videoWidth, vh = video.videoHeight
-            const sw = window.innerWidth, sh = window.innerHeight
-            const videoAspect = vw / vh
-            const screenAspect = sw / sh
-            let scale, ox, oy
-            if (videoAspect > screenAspect) {
-              scale = sh / vh; ox = (sw - vw * scale) / 2; oy = 0
-            } else {
-              scale = sw / vw; ox = 0; oy = (sh - vh * scale) / 2
-            }
-            const target = {
-              x: bbox.originX * scale + ox,
-              y: bbox.originY * scale + oy,
-              w: bbox.width * scale,
-              h: bbox.height * scale,
-            }
-            if (!current) current = target
-            const alpha = 0.2
-            current = {
-              x: current.x + (target.x - current.x) * alpha,
-              y: current.y + (target.y - current.y) * alpha,
-              w: current.w + (target.w - current.w) * alpha,
-              h: current.h + (target.h - current.h) * alpha,
-            }
-            setFaceBox({ ...current })
-          } else {
-            detectionScoreRef.current = 1
-            setFaceOccluded(false)
-            current = null
-            setFaceBox(null)
+          detectErrors = 0
+          faces = det.detections.map(d => ({
+            area: d.boundingBox.width * d.boundingBox.height,
+            score: d.categories?.[0]?.score ?? 1,
+            bbox: d.boundingBox,
+          }))
+          // Largest face = closest person; the people behind only matter for the queue rule
+          front = frontFace(faces)
+        } catch (e) {
+          // A detector that keeps failing must not look like an empty kiosk forever
+          if (++detectErrors === DETECT_ERROR_LIMIT) {
+            console.error('[MediaPipe] detectForVideo keeps failing:', e)
+            detectorRef.current = 'failed'
           }
-        } catch (e) { console.warn('[MediaPipe] detectForVideo error:', e) }
+        }
       }
 
-      // Downsample frame for motion + luminance
-      if (video && video.readyState >= 2 && motionCanvasRef.current) {
-        const mc = motionCanvasRef.current
-        const ctx = mc.getContext('2d', { willReadFrequently: true })
-        ctx.drawImage(video, 0, 0, MOTION_CANVAS_W, MOTION_CANVAS_H)
-        const { data } = ctx.getImageData(0, 0, MOTION_CANVAS_W, MOTION_CANVAS_H)
-        const n = MOTION_CANVAS_W * MOTION_CANVAS_H
-        const curr = new Uint8Array(n)
+      if (front) {
+        const { scale, ox, oy } = coverTransform(video)
+        const target = {
+          x: front.bbox.originX * scale + ox,
+          y: front.bbox.originY * scale + oy,
+          w: front.bbox.width * scale,
+          h: front.bbox.height * scale,
+        }
+        if (!current) current = target
+        const alpha = 0.2
+        current = {
+          x: current.x + (target.x - current.x) * alpha,
+          y: current.y + (target.y - current.y) * alpha,
+          w: current.w + (target.w - current.w) * alpha,
+          h: current.h + (target.h - current.h) * alpha,
+        }
+        front.centered = isCentered(current)
+        setFaceBox({ ...current })
+      } else {
+        current = null
+        setFaceBox(null)
+      }
+
+      // One state decides both whether the countdown runs and which message shows
+      const next = idleState({
+        cameraOk: cameraOkRef.current,
+        detector: detectorRef.current,
+        faces,
+        prev: idleRef.current,
+      })
+      idleRef.current = next
+      setIdle(next)
+      setOthersBehind(faces.length > 1)
+
+      // Downsample frame for average luminance (low-light hint)
+      if (videoReady && lumCanvasRef.current) {
+        const ctx = lumCanvasRef.current.getContext('2d', { willReadFrequently: true })
+        ctx.drawImage(video, 0, 0, LUM_CANVAS_W, LUM_CANVAS_H)
+        const { data } = ctx.getImageData(0, 0, LUM_CANVAS_W, LUM_CANVAS_H)
+        const n = LUM_CANVAS_W * LUM_CANVAS_H
         let lumSum = 0
         for (let i = 0; i < n; i++) {
           const p = i * 4
-          const lum = (data[p] * 77 + data[p + 1] * 150 + data[p + 2] * 29) >> 8
-          curr[i] = lum
-          lumSum += lum
+          lumSum += (data[p] * 77 + data[p + 1] * 150 + data[p + 2] * 29) >> 8
         }
-        // Low light detection
         setLowLight(lumSum / n < LOW_LIGHT_THRESHOLD)
-        // Motion EMA
-        if (prevPixelsRef.current) {
-          let diff = 0
-          for (let i = 0; i < n; i++) {
-            if (Math.abs(curr[i] - prevPixelsRef.current[i]) > 20) diff++
-          }
-          motionScoreRef.current = motionScoreRef.current * 0.7 + (diff / n) * 0.3
-        }
-        prevPixelsRef.current = curr
       }
 
       if (!cancelled) rafRef.current = requestAnimationFrame(tick)
@@ -278,55 +271,17 @@ export default function KioskPage() {
     }
   }, [phase])
 
-  function computeFaceFeatures() {
-    const video = videoRef.current
-    const box = faceBoxRef.current
-    if (!video || !box || !textureCanvasRef.current) return { variance: Infinity, rbRatio: 0 }
-    const vw = video.videoWidth, vh = video.videoHeight
-    const sw = window.innerWidth, sh = window.innerHeight
-    const videoAspect = vw / vh, screenAspect = sw / sh
-    let scale, ox, oy
-    if (videoAspect > screenAspect) {
-      scale = sh / vh; ox = (sw - vw * scale) / 2; oy = 0
-    } else {
-      scale = sw / vw; ox = 0; oy = (sh - vh * scale) / 2
-    }
-    const fx = Math.max(0, (box.x - ox) / scale)
-    const fy = Math.max(0, (box.y - oy) / scale)
-    const fw = Math.min(box.w / scale, vw - fx)
-    const fh = Math.min(box.h / scale, vh - fy)
-    if (fw < 20 || fh < 20) return { variance: Infinity, rbRatio: 0 }
-    const tc = textureCanvasRef.current
-    tc.width = 32; tc.height = 32
-    const ctx = tc.getContext('2d', { willReadFrequently: true })
-    ctx.drawImage(video, fx, fy, fw, fh, 0, 0, 32, 32)
-    const { data } = ctx.getImageData(0, 0, 32, 32)
-    const n = 32 * 32
-    let sum = 0, sumSq = 0, sumR = 0, sumB = 0
-    for (let i = 0; i < n; i++) {
-      const p = i * 4
-      const lum = (data[p] * 77 + data[p + 1] * 150 + data[p + 2] * 29) >> 8
-      sum += lum
-      sumSq += lum * lum
-      sumR += data[p]
-      sumB += data[p + 2]
-    }
-    const mean = sum / n
-    const variance = sumSq / n - mean * mean
-    const rbRatio = sumB > 0 ? sumR / sumB : 0
-    return { variance, rbRatio }
-  }
-
   async function startLiveness() {
-    // Release our camera stream before FaceLivenessDetector acquires it.
-    // Prevents concurrent getUserMedia conflict that crashes the liveness component.
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop())
-      if (videoRef.current) videoRef.current.srcObject = null
-      streamRef.current = null
-    }
     try {
       const res = await createLivenessSession('KIOSK')
+      // Release our camera stream before FaceLivenessDetector acquires it.
+      // Prevents concurrent getUserMedia conflict that crashes the liveness component.
+      // Done only once the session exists, so a failed start leaves the idle camera running.
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop())
+        if (videoRef.current) videoRef.current.srcObject = null
+        streamRef.current = null
+      }
       setLivenessSessionId(res.data.sessionId)
       setLivenessError(null)
       setLivenessReady(false)
@@ -344,14 +299,7 @@ export default function KioskPage() {
     const canvas = document.createElement('canvas')
     if (box) {
       const vw = video.videoWidth, vh = video.videoHeight
-      const sw = window.innerWidth, sh = window.innerHeight
-      const videoAspect = vw / vh, screenAspect = sw / sh
-      let scale, ox, oy
-      if (videoAspect > screenAspect) {
-        scale = sh / vh; ox = (sw - vw * scale) / 2; oy = 0
-      } else {
-        scale = sw / vw; ox = 0; oy = (sh - vh * scale) / 2
-      }
+      const { scale, ox, oy } = coverTransform(video)
       const padX = box.w * 0.2, padY = box.h * 0.2
       let fx = (box.x - padX - ox) / scale
       let fy = (box.y - padY - oy) / scale
@@ -380,10 +328,7 @@ export default function KioskPage() {
         setTimeout(() => setLivenessError(null), 4000)
         return
       }
-      if (detectionScoreRef.current < 0.65) return
-      const { variance, rbRatio } = computeFaceFeatures()
-      console.log('[scan] score:', detectionScoreRef.current.toFixed(2), 'rbRatio:', rbRatio.toFixed(2), 'texture:', Math.round(variance))
-      // Capture fallback frame if not already captured at n=1 tick
+      // Capture the pre-liveness frame (face centered and stable at this point)
       if (!capturedBlobRef.current) {
         capturedBlobRef.current = await captureFrameBlob()
       }
@@ -472,9 +417,7 @@ export default function KioskPage() {
   function handleReset() {
     clearInterval(countdownRef.current)
     cancelAnimationFrame(rafRef.current)
-    motionScoreRef.current = 0
-    prevPixelsRef.current = null
-    faceCountRef.current = 0
+    idleRef.current = 'no_face'
     capturedBlobRef.current = null
     startingRef.current = false
     handleCompleteRef.current = false
@@ -486,7 +429,7 @@ export default function KioskPage() {
     setResult(null)
     setIdentifying(false)
     setFaceBox(null)
-    setFaceCount(0)
+    setIdle('no_face')
   }
 
   function showErrorAndReset(msg) {
@@ -494,9 +437,7 @@ export default function KioskPage() {
     handlingErrorRef.current = true
     clearInterval(countdownRef.current)
     cancelAnimationFrame(rafRef.current)
-    motionScoreRef.current = 0
-    prevPixelsRef.current = null
-    faceCountRef.current = 0
+    idleRef.current = 'no_face'
     capturedBlobRef.current = null
     startingRef.current = false
     handleCompleteRef.current = false
@@ -507,7 +448,7 @@ export default function KioskPage() {
     setResult(null)
     setIdentifying(false)
     setFaceBox(null)
-    setFaceCount(0)
+    setIdle('no_face')
     setLivenessError(msg)
     setTimeout(() => {
       setLivenessError(null)
@@ -517,21 +458,22 @@ export default function KioskPage() {
 
   function renderCornerBrackets() {
     const faceFound = !!faceBox
-    const centered = isCentered(faceBox)
+    const ready = idle === 'ready'
     const box = faceBox ?? {
       x: window.innerWidth / 2 - 100,
       y: window.innerHeight / 2 - 155,
       w: 200,
       h: 260,
     }
+    // white: nobody there · blue: good to scan · amber: face there but something to fix
     const color = !faceFound
       ? 'rgba(255,255,255,0.7)'
-      : centered
+      : ready
         ? '#3b82f6'
         : '#f59e0b'
     const glow = !faceFound
       ? '0 0 8px rgba(255,255,255,0.3)'
-      : centered
+      : ready
         ? '0 0 10px rgba(59,130,246,0.8), 0 0 20px rgba(59,130,246,0.4)'
         : '0 0 10px rgba(245,158,11,0.8), 0 0 20px rgba(245,158,11,0.4)'
     const pad = 14
@@ -559,8 +501,8 @@ export default function KioskPage() {
     ))
   }
 
-  const faceFound = !!faceBox
-  const centered = isCentered(faceBox)
+  const idleProblem = idle !== 'ready' && idle !== 'no_face'
+  const idleBroken = idle === 'no_camera' || idle === 'detector_unavailable'
 
   return (
     <div style={{ position: 'relative', width: '100vw', height: '100dvh', background: '#080e1a', overflow: 'hidden' }}>
@@ -589,48 +531,31 @@ export default function KioskPage() {
                 <div style={{ fontSize: 16, fontWeight: 600, color: '#f87171', marginBottom: 4 }}>{livenessError}</div>
                 <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.3)' }}>Restarting…</div>
               </>
-            ) : lowLight ? (
-              <>
-                <div style={{ fontSize: 18, fontWeight: 600, color: '#f59e0b', marginBottom: 4 }}>Poor lighting</div>
-                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.35)' }}>
-                  Move to a better lit area
-                </div>
-              </>
-            ) : faceOccluded ? (
-              <>
-                <div style={{ fontSize: 18, fontWeight: 600, color: '#f59e0b', marginBottom: 4 }}>
-                  Face not clearly visible
-                </div>
-                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.35)' }}>
-                  Remove mask, hand or covering
-                </div>
-              </>
-            ) : faceCount > 1 ? (
-              <>
-                <div style={{ fontSize: 18, fontWeight: 600, color: '#f59e0b', marginBottom: 4 }}>
-                  Multiple people detected
-                </div>
-                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.35)' }}>
-                  Please queue — scanning closest person first
-                </div>
-              </>
-            ) : faceFound && !centered ? (
-              <>
-                <div style={{ fontSize: 18, fontWeight: 600, color: '#f59e0b', marginBottom: 4 }}>
-                  Move to center
-                </div>
-                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.35)' }}>
-                  Position your face within the brackets
-                </div>
-              </>
             ) : (
               <>
-                <div style={{ fontSize: 18, fontWeight: 600, color: '#e8edf5', marginBottom: 4 }}>
-                  {faceFound ? 'Hold still' : 'Stand in front of the camera'}
+                <div style={{
+                  fontSize: 18, fontWeight: 600, marginBottom: 4,
+                  color: idleBroken ? '#f87171' : idleProblem ? '#f59e0b' : '#e8edf5',
+                }}>
+                  {idle === 'ready' ? 'Hold still' : IDLE_TEXT[idle][0]}
                 </div>
                 <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.35)' }}>
-                  Starting in {countdown}…
+                  {idle === 'ready'
+                    ? `Starting in ${countdown}…${othersBehind ? ' · scanning the person in front' : ''}`
+                    : IDLE_TEXT[idle][1]}
                 </div>
+                {idle === 'no_camera' && (
+                  <button style={idleButtonStyle} onClick={() => acquireCamera()}>Retry camera</button>
+                )}
+                {idle === 'detector_unavailable' && (
+                  <button style={idleButtonStyle} onClick={() => startScan()}>Tap to scan</button>
+                )}
+                {/* Low light is a hint, not a gate: the scan still runs */}
+                {lowLight && idle !== 'no_camera' && (
+                  <div style={{ fontSize: 13, color: '#f59e0b', marginTop: 8 }}>
+                    Poor lighting — move to a better lit area
+                  </div>
+                )}
               </>
             )}
           </div>
