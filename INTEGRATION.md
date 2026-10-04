@@ -118,6 +118,8 @@ Response — no match:
 
 Use `matched` to gate access in your system.
 
+> **This endpoint does no liveness check.** A photo or a phone video of an enrolled person matches too. Call it only from a device and flow you trust (an attended desk, or after your own liveness step). For an unattended access point use the liveness flow instead: `POST /api/liveness/session`, run the AWS Face Liveness challenge in the browser, then `POST /api/liveness/identify` with `{ "sessionId": "...", "frameImage": "<optional base64 JPEG>" }`. That call returns `422` when liveness did not pass, and uses `frameImage` only when it shows the same person who passed liveness.
+
 ### Step 5: Delete Enrollment (Optional)
 
 When a visitor leaves or is removed:
@@ -132,7 +134,9 @@ X-Tenant-Id: <tenantId>
 
 ## Mode 2 — Kiosk UI Embed
 
-Embed the kiosk React page in your frontend. The kiosk runs fully standalone — it detects faces, runs the liveness challenge on every scan, and shows the result screen.
+Embed the kiosk React page in your frontend. The kiosk runs fully standalone — it detects faces, checks liveness, and shows the result screen.
+
+Liveness is the AWS Face Liveness challenge, with an optional **fast path** in front of it: an on-device anti-spoof model plus a blink check that can grant a strong match at once and otherwise falls through to the challenge. The fast path is decided in the browser, so validate it against printed photos and phone videos on your own hardware, or switch it off with `VITE_KIOSK_FAST_PATH=false`. See "Liveness and the Fast Path" in the README.
 
 ### Option A: Iframe
 
@@ -266,6 +270,7 @@ The face recognition service requires these AWS resources:
 | IAM user or task role | `AmazonRekognitionFullAccess` + `AmazonS3FullAccess` |
 | S3 bucket | Stores enrolled face images |
 | Rekognition Face Liveness | Enable in AWS console for your region |
+| IAM `rekognition:CompareFaces` | Needed by `POST /api/liveness/identify` (full policy in DEPLOY.md) |
 | Cognito Identity Pool | Required by the AWS Amplify liveness SDK in the frontend |
 
 ### Cognito Identity Pool (for liveness UI)
@@ -361,7 +366,13 @@ aws:
 | `matched: false` for known person | Similarity below threshold or bad angle during challenge | Lower threshold in dev (`75.0`); ensure enrolment photo is well-lit and front-facing |
 | Liveness "TIMEOUT" | User too slow or face not visible | Instruct user to remove coverings, use better lighting |
 | Liveness glitches / exits immediately | Camera conflict — two streams racing | Ensure only one browser tab is open; hard reload clears WebRTC state |
-| "Face not recognized — try again" for enrolled person | Both identify images (pre-captured + liveness) below threshold | Look directly at camera during countdown; ensure enrolment photo is high quality |
+| "Face not recognized — look directly at camera and try again" for enrolled person | Liveness image below threshold and the pre-captured frame did not rescue it | Look directly at camera during countdown; ensure enrolment photo is high quality |
+| "Not Enrolled" for an enrolled person | Two no-match results in a row | Same as above; re-enroll with a clear front-facing image |
+| "Connection problem" at the kiosk | Backend, network or AWS error during the scan (never a spoof verdict) | Check backend logs. A `500` right after liveness passes usually means the IAM policy lacks `rekognition:CompareFaces` |
+| "One at a time" keeps showing | Another face nearly as large as the front one is in frame | Others step back; the front face must be clearly larger (others at most 0.4 of its area) |
+| "Face detection offline" | MediaPipe could not load from its CDN, or keeps failing | Check the kiosk's internet access; "Tap to scan" still runs the AWS challenge |
+| "Camera unavailable" | Permission denied, camera missing or unplugged | Allow camera access for the page, press Retry |
+| Fast path never grants instantly | No blink seen in ~2 s, match below 93, low light, cooldown after a failed scan, or models failed to load (see browser console `[fast path]`) | Normal fallback is the AWS challenge; tune thresholds in `frontend/src/kioskLogic.mjs` |
 | AWS credentials error | `spring-dotenv` only injects into Spring env, not `System.getenv()` | Use `@Value` in `AwsConfig` — already implemented |
 | Kiosk shows "Poor lighting" | Avg frame luminance < 30 | Improve ambient lighting at kiosk location |
 | Face covering warning always on | MediaPipe confidence < 0.65 | Check lighting; ensure face is fully visible |

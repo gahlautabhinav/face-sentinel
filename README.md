@@ -12,7 +12,8 @@ Microservice handling visitor face enrollment, identification, and liveness-base
 | Storage | AWS S3 |
 | Database | PostgreSQL 15 + Flyway |
 | Auth | JWT (JJWT 0.12.6) — ADMIN + KIOSK roles |
-| Frontend | React 18 + Vite, MediaPipe BlazeFace |
+| Frontend | React 18 + Vite, MediaPipe BlazeFace + FaceLandmarker |
+| On-device anti-spoof | MiniFASNetV2 via onnxruntime-web (kiosk fast path) |
 | Container | Docker / Docker Compose |
 
 ---
@@ -26,32 +27,52 @@ Admin UI (React)
   └── DELETE /api/face/{visitorId}   — remove enrollment
 
 Kiosk UI (React, WebRTC, MediaPipe)
-  └── Frame-by-frame detection:
-        - Largest face selected (queue ordering — closest person first)
-        - Low-light warning if avg luminance < 30
-        - Face covering detection via MediaPipe confidence score
-        - Multiple-person detection — countdown pauses, closest scanned first
-  └── Always → liveness challenge (AWS Rekognition Face Liveness)
-        - Proves real person (defeats photos, video playback, phone screens)
-        - After challenge passes: dual-image identify
-            1. Pre-captured frame (captured when face centered + stable)
-            2. Liveness session image (fallback)
-        - matched      → Access Granted (green)
-        - no match     → "Face not recognized — try again" (retry prompt)
-        - liveness fail → "Not a real face" (error)
+  └── Idle: one state decides both the message and whether the countdown runs
+        - no face            → waits, no countdown, no AWS session
+        - face covered       → "Face not clearly visible"
+        - several people     → front person scanned only when clearly closer, else "One at a time"
+        - off-centre         → "Move to center"
+        - low light          → hint only, scan still runs
+        - camera / detector unavailable → error with Retry / "Tap to scan"
+  └── Fast path (optional, VITE_KIOSK_FAST_PATH)
+        - on-device anti-spoof model + blink check on the live frames
+        - both say "live" AND face match ≥ 93 → Access Granted at once
+        - anything less → falls through to the liveness challenge below
+  └── Liveness challenge (AWS Rekognition Face Liveness)
+        - server checks the liveness result, then identifies from the liveness image
+        - matched        → Access Granted (green)
+        - no match       → retry once, then "Not Enrolled"
+        - liveness fail  → "Not a real face"
+        - server/network → "Connection problem" (never a grant)
 ```
 
-### Why Always Liveness
+### Liveness and the Fast Path
 
-AWS Rekognition `SearchFacesByImage` matches face features but **cannot detect spoofing** — a high-quality photo or video on a phone screen can match an enrolled face with >90% similarity. The only reliable spoof defence is AWS Rekognition Face Liveness Challenge (3D depth + randomised challenge). Every scan goes through liveness regardless of image quality.
+AWS Rekognition `SearchFacesByImage` matches face features but **cannot detect spoofing** — a high-quality photo or video on a phone screen can match an enrolled face with >90% similarity. The reliable spoof defence is the AWS Rekognition Face Liveness challenge, and it remains the judge for every scan the fast path does not clear.
 
-### Dual-Image Identify
+The **fast path** lets a real, enrolled person through without the challenge. While one clear, centred face is in view the kiosk samples about eight times a second; each sample reads one frozen video frame with:
 
-After liveness passes, two identify attempts run:
-1. **Pre-captured frame** — captured when face was confirmed centered and stable, best angle for matching
-2. **Liveness session image** — captured during the oval challenge (may be off-angle), used as fallback
+- **MiniFASNetV2** (anti-spoof CNN, run in the browser with onnxruntime-web) — scores whether the face and its surroundings look like a live capture rather than a print or a screen
+- **MediaPipe FaceLandmarker** — eye closure and head pose, to require a blink made with the head held steady
 
-Best similarity from either attempt wins. This prevents enrolled people from being rejected due to the liveness challenge's close-up oval angle.
+Access is granted instantly only when every sample in the window scores live, a blink is seen, and the face match is 93 or higher. Otherwise nothing changes and the countdown leads to the AWS challenge.
+
+Limits to know before relying on it:
+
+- The decision is made in the browser, so the kiosk device must be trusted. `/api/face/identify` itself performs no liveness check.
+- A video replay also blinks, so against replay the defence is the anti-spoof model alone. **Test it against printed photos and phone/tablet videos on your own hardware before enabling it in production.**
+- After a spoof frame or a failed liveness check the fast path is off for 60 s (20 s after any other failed scan); the AWS path stays available.
+- Set `VITE_KIOSK_FAST_PATH=false` to always use the AWS challenge. Its models are then not downloaded at all.
+
+### Who Decides the Identity
+
+After the liveness challenge the kiosk makes one call, `POST /api/liveness/identify`. The server:
+
+1. requires the liveness session to have succeeded with enough confidence (otherwise `422`)
+2. identifies from the **liveness reference image**
+3. only if that finds no match, considers the optional `frameImage` — a better-angle frame the kiosk captured just before the challenge — and uses it **only when Rekognition `CompareFaces` shows it is the same person who passed liveness and no other face is in it**
+
+A frame can therefore never decide the identity on its own, and a failed or errored liveness check never leads to a grant.
 
 ### Multi-Tenant Collections
 
@@ -114,8 +135,10 @@ Authorization: Bearer <kiosk-token>
 X-Tenant-Id: 550e8400-e29b-41d4-a716-446655440000
 Content-Type: application/json
 
-{ "sessionId": "abc-123-..." }
+{ "sessionId": "abc-123-...", "frameImage": "<optional base64 JPEG>" }
 ```
+
+`frameImage` is optional. Returns `422` when the liveness check did not pass.
 
 Response:
 ```json
@@ -179,6 +202,7 @@ Response:
    VITE_COGNITO_IDENTITY_POOL_ID=ap-south-1:<pool-id>
    VITE_AWS_REGION=ap-south-1
    VITE_TENANT_ID=<your-tenant-uuid>
+   VITE_KIOSK_FAST_PATH=true   # false = always use the AWS liveness challenge
    ```
 
 4. Start database:
@@ -203,7 +227,8 @@ Response:
 ### Run Tests
 
 ```bash
-mvn test
+mvn test                      # backend unit tests (no AWS, no DB)
+cd frontend && npm run check  # kiosk decision logic self-check (plain node)
 ```
 
 ---
@@ -263,8 +288,13 @@ src/main/java/com/logbook360/facerec/
 
 frontend/src/
 ├── api/             # faceApi.js, authApi.js
-└── components/      # AdminPage, EnrollPage, IdentifyPage, DeletePage,
-                     # KioskPage, AccessResult, RegisterPage
+├── components/      # AdminPage, EnrollPage, IdentifyPage, DeletePage,
+│                    # KioskPage, AccessResult, RegisterPage
+├── kioskLogic.mjs   # pure kiosk decisions: idle state, queue rule, fast-path verdict
+├── kioskLogic.check.mjs   # its self-check (npm run check)
+└── fastPath.js      # anti-spoof model + blink sampling for the fast path
+
+frontend/public/models/   # MiniFASNetV2.onnx + NOTICE.txt (Apache-2.0)
 ```
 
 ---
@@ -280,14 +310,17 @@ frontend/src/
 
 ### Kiosk Features (Phases 2–3 — Complete)
 
-- **Always-liveness** — every scan goes through AWS Face Liveness Challenge. No bypass. Defeats photos, videos, and phone screens.
-- **Dual-image identify** — pre-captured stable frame (primary) + liveness session image (fallback). Best match wins. Handles angle variation from the oval challenge.
-- **Queue ordering** — largest detected face (closest to camera) scanned first. Countdown pauses when multiple people are in frame.
-- **Low-light warning** — warns user when average frame luminance < 30.
-- **Face covering detection** — countdown pauses with warning when MediaPipe confidence < 0.65 (hand or mask in front of face).
-- **Concurrent scan guard** — prevents duplicate liveness sessions from async race conditions.
+- **Liveness is the judge** — the server checks the AWS Face Liveness result and identifies from the liveness image. A failed, errored or incomplete check never grants.
+- **Fast path (optional)** — on-device anti-spoof model + blink; instant grant only with a match of 93 or higher, otherwise the AWS challenge. See "Liveness and the Fast Path" for its limits.
+- **Better-angle frame, safely** — the frame captured before the challenge is sent with the liveness request and used only if it shows the same person who passed liveness.
+- **Queue handling** — the front person is scanned when clearly closer than everyone else (other faces at most 0.4 of their face area); otherwise "One at a time".
+- **Empty kiosk stays idle** — no face means no countdown and no AWS liveness session.
+- **Low-light hint** — shown when average frame luminance < 30; does not block the scan.
+- **Face covering detection** — countdown pauses with a warning when MediaPipe confidence < 0.65 (hand or mask in front of face).
+- **Clear failures** — camera denied or unplugged shows a Retry; face detection offline offers a manual "Tap to scan"; outages read "Connection problem", not "Not a real face".
+- **Not enrolled** — a real person with no match gets one retry, then a "Not Enrolled" screen.
+- **Concurrent scan guard** — one scan at a time; a late answer for an abandoned scan is ignored.
 - **Camera exclusivity** — camera stream released before `FaceLivenessDetector` mounts, preventing WebRTC conflicts on repeated scans.
-- **Retry on no-match** — liveness pass + no identify match → "Face not recognized — try again" rather than a misleading "Not Enrolled" message.
 
 ---
 
@@ -297,7 +330,10 @@ frontend/src/
 - AWS credentials use `StaticCredentialsProvider` locally via `@Value`; production uses IAM task role (`DefaultCredentialsProvider`)
 - `spring-dotenv` only injects into Spring `Environment`, not `System.getenv()` — AWS SDK bypasses it. `AwsConfig.java` reads via `@Value` and constructs `StaticCredentialsProvider` explicitly. **Never revert this to plain `DefaultCredentialsProvider`.**
 - Similarity threshold defaults to 90.0 in prod; use 75.0–80.0 in dev for easier testing
-- Rekognition `SearchFacesByImage` cannot detect spoofing — the liveness challenge in the kiosk UI is the only reliable spoof defence
+- Rekognition `SearchFacesByImage` cannot detect spoofing — the AWS liveness challenge is the reliable spoof defence. The kiosk fast path skips it on the strength of a browser-side model and must be validated on your hardware first; `VITE_KIOSK_FAST_PATH=false` turns it off
+- `POST /api/face/identify` performs no liveness check; anything that calls it directly must be a trusted device
+- The IAM policy needs `rekognition:CompareFaces` (used to bind the kiosk frame to the liveness result)
+- The anti-spoof model `frontend/public/models/MiniFASNetV2.onnx` is from Silent-Face-Anti-Spoofing (Minivision), Apache License 2.0 — see `NOTICE.txt` beside it
 
 ---
 
