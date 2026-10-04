@@ -50,6 +50,15 @@ public class RekognitionService {
                 .build());
     }
 
+    // Compares the largest face in the source image against every face in the target image.
+    public CompareFacesResponse compareFaces(byte[] sourceBytes, byte[] targetBytes, float threshold) {
+        return rekognitionClient.compareFaces(CompareFacesRequest.builder()
+                .sourceImage(Image.builder().bytes(SdkBytes.fromByteArray(sourceBytes)).build())
+                .targetImage(Image.builder().bytes(SdkBytes.fromByteArray(targetBytes)).build())
+                .similarityThreshold(threshold)
+                .build());
+    }
+
     public DetectFacesResponse detectFaces(byte[] imageBytes) {
         return rekognitionClient.detectFaces(DetectFacesRequest.builder()
                 .image(Image.builder().bytes(SdkBytes.fromByteArray(imageBytes)).build())

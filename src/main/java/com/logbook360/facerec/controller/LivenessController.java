@@ -38,7 +38,8 @@ public class LivenessController {
     public ResponseEntity<ApiResponse<FaceIdentifyResponse>> identifyLive(
             @RequestHeader("X-Tenant-Id") UUID tenantId,
             @RequestBody @Valid LivenessIdentifyRequest request) {
-        FaceIdentifyResponse response = livenessService.identifyFromSession(tenantId, request.getSessionId());
+        FaceIdentifyResponse response = livenessService.identifyFromSession(
+                tenantId, request.getSessionId(), request.getFrameImage());
         return ResponseEntity.ok(ApiResponse.success(response,
                 response.isMatched() ? "Visitor identified" : "No matching visitor found"));
     }

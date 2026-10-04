@@ -29,6 +29,7 @@ Create policy `logbook360-face-policy` in AWS IAM console:
       "Effect": "Allow",
       "Action": [
         "rekognition:DetectFaces",
+        "rekognition:CompareFaces",
         "rekognition:CreateFaceLivenessSession",
         "rekognition:GetFaceLivenessSessionResults"
       ],

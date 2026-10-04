@@ -11,4 +11,7 @@ public class LivenessIdentifyRequest {
     @NotNull
     @NotBlank
     private String sessionId;
+
+    // Optional kiosk frame, base64 in JSON. Only used if it shows the person who passed liveness.
+    private byte[] frameImage;
 }
