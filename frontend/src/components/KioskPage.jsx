@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState } from 'react'
 import { FaceDetector as MPFaceDetector, FilesetResolver } from '@mediapipe/tasks-vision'
-import { createLivenessSession, identifyLive, identifyFace } from '../api/faceApi.js'
+import { createLivenessSession, identifyLive } from '../api/faceApi.js'
 import { idleState, frontFace } from '../kioskLogic.mjs'
 import AccessResult from './AccessResult.jsx'
 import { FaceLivenessDetector } from '@aws-amplify/ui-react-liveness'
@@ -16,6 +16,21 @@ const LOW_LIGHT_THRESHOLD = 30   // avg luminance 0-255; below = warn user
 const LUM_CANVAS_W = 64
 const LUM_CANVAS_H = 48
 const DETECT_ERROR_LIMIT = 30    // consecutive failed frames before the detector counts as broken
+const NO_MATCH_LIMIT = 2         // consecutive "real person, no match" results before "Not Enrolled"
+const NO_FACE_RESET_MS = 2000    // visitor gone this long: forget their no-match count
+
+// FaceLivenessDetector error states (LivenessErrorState) the kiosk explains; the rest get a generic line.
+const LIVENESS_ERROR_TEXT = {
+  TIMEOUT: 'Scan timed out — please try again',
+  FRESHNESS_TIMEOUT: 'Scan timed out — please try again',
+  MULTIPLE_FACES_ERROR: 'One at a time — others please step back',
+  FACE_DISTANCE_ERROR: 'Stay still while the scan starts — please try again',
+  CAMERA_ACCESS_ERROR: 'Camera problem — please try again',
+  CAMERA_FRAMERATE_ERROR: 'Camera problem — please try again',
+  DEFAULT_CAMERA_NOT_FOUND_ERROR: 'Camera problem — please try again',
+  SERVER_ERROR: 'Connection problem — please try again',
+  CONNECTION_TIMEOUT: 'Connection problem — please try again',
+}
 
 // Message per idle state (see idleState in kioskLogic.mjs). 'ready' is rendered with the countdown.
 const IDLE_TEXT = {
@@ -75,6 +90,9 @@ export default function KioskPage() {
   const capturedBlobRef = useRef(null)
   const startingRef = useRef(false)
   const handleCompleteRef = useRef(false)
+  const attemptRef = useRef(0)      // bumped on every reset; lets a late server answer be recognised as stale
+  const noMatchRef = useRef(0)
+  const resetTimerRef = useRef(null)
 
   const [phase, setPhase] = useState('idle')
   const [countdown, setCountdown] = useState(COUNTDOWN_START)
@@ -131,6 +149,7 @@ export default function KioskPage() {
     return () => {
       if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop())
       cancelAnimationFrame(rafRef.current)
+      clearTimeout(resetTimerRef.current)
     }
   }, [])
 
@@ -185,6 +204,7 @@ export default function KioskPage() {
 
     let current = null      // smoothed on-screen box of the front face
     let detectErrors = 0
+    let noFaceSince = null
     let cancelled = false
 
     function tick() {
@@ -247,6 +267,15 @@ export default function KioskPage() {
       idleRef.current = next
       setIdle(next)
       setOthersBehind(faces.length > 1)
+
+      // A visitor who walks away takes their "not recognized" count with them.
+      // Only counted while the detector works, so its reload after a scan does not look like an empty kiosk.
+      if (next === 'no_face' && detectorRef.current === 'ready') {
+        noFaceSince ??= performance.now()
+        if (performance.now() - noFaceSince >= NO_FACE_RESET_MS) noMatchRef.current = 0
+      } else {
+        noFaceSince = null
+      }
 
       // Downsample frame for average luminance (low-light hint)
       if (videoReady && lumCanvasRef.current) {
@@ -328,10 +357,9 @@ export default function KioskPage() {
         setTimeout(() => setLivenessError(null), 4000)
         return
       }
-      // Capture the pre-liveness frame (face centered and stable at this point)
-      if (!capturedBlobRef.current) {
-        capturedBlobRef.current = await captureFrameBlob()
-      }
+      // Capture the pre-liveness frame (face centered and stable at this point).
+      // Always fresh: a frame kept from an earlier failed start could show a different visitor.
+      capturedBlobRef.current = await captureFrameBlob()
       // Abort if something reset state while we were capturing
       if (handlingErrorRef.current) return
       await startLiveness()
@@ -347,74 +375,68 @@ export default function KioskPage() {
     return () => clearTimeout(t)
   }, [phase, livenessSessionId])
 
+  function showResult(data) {
+    setResult({ data })
+    setPhase('result')
+    resetTimerRef.current = setTimeout(handleReset, AUTO_RESET_MS)
+  }
+
+  // FaceLivenessDetector calls this when the challenge upload finishes, whether or not it passed.
+  // The server is the only judge: it checks the liveness verdict and identifies the person from
+  // the liveness image. The pre-captured frame is sent along as a better-angle fallback, which
+  // the server uses only if it shows the same person who passed liveness.
   async function handleLivenessComplete() {
     if (handleCompleteRef.current) return
     handleCompleteRef.current = true
-    const tenantId = getKioskTenantId()
+    const attempt = attemptRef.current
+    const frameBlob = capturedBlobRef.current
+    capturedBlobRef.current = null
     setIdentifying(true)
+
+    let res, error
     try {
-      let matched = false
-      let visitorName = null
-      let similarity = 0
-
-      // Primary: pre-captured frame (taken at n=1 tick — face centered + stable)
-      // Much better angle than liveness challenge oval image
-      if (capturedBlobRef.current) {
-        try {
-          const frameRes = await identifyFace({ tenantId, imageFile: capturedBlobRef.current })
-          if (frameRes.data?.matched) {
-            matched = true
-            visitorName = frameRes.data.visitorName
-            similarity = frameRes.data.similarity ?? 0
-            console.log('[liveness] pre-captured frame matched:', similarity)
-          }
-        } catch { /* network error — will try liveness image next */ }
-      }
-
-      // Always call identifyLive — REQUIRED to verify liveness session result (throws if liveness failed)
-      // Also acts as secondary identify using challenge image; keep if better similarity
-      try {
-        const liveRes = await identifyLive({ tenantId, sessionId: livenessSessionId })
-        if (liveRes.data?.matched) {
-          const liveSim = liveRes.data.similarity ?? 0
-          if (!matched || liveSim > similarity) {
-            matched = true
-            visitorName = liveRes.data.visitorName
-            similarity = liveSim
-            console.log('[liveness] identifyLive matched:', liveSim)
-          }
-        }
-      } catch (e) {
-        // identifyLive throws when liveness session was not PASS (not a real person / challenge failed)
-        // If pre-captured already found a match, liveness image just didn't match — still a real person
-        if (!matched) throw e
-      }
-
-      if (!matched) {
-        // Liveness passed (real person) but couldn't identify — could be bad angle, not truly not enrolled
-        // Show retry message rather than "Not Enrolled" (can't distinguish the two from frontend)
-        showErrorAndReset('Face not recognized — look directly at camera and try again')
-        return
-      }
-      setResult({
-        data: {
-          verified: true,
-          visitorName,
-          similarity,
-        },
-      })
-      setPhase('result')
-      setTimeout(handleReset, AUTO_RESET_MS)
+      res = await identifyLive({ tenantId: getKioskTenantId(), sessionId: livenessSessionId, frameBlob })
     } catch (e) {
-      console.error('[Liveness] handleLivenessComplete error:', e)
-      showErrorAndReset('Not a real face — please try again')
-    } finally {
-      setIdentifying(false)
-      capturedBlobRef.current = null
+      error = e
     }
+    // The kiosk was reset while waiting (error, timeout, manual reset): this answer belongs to
+    // an abandoned scan and must not grant or deny whoever is standing there now.
+    if (attempt !== attemptRef.current) return
+    setIdentifying(false)
+
+    if (error) {
+      console.error('[Liveness] identify failed:', error)
+      // 422 is the server saying liveness did not pass. Anything else is an outage, not a spoof.
+      showErrorAndReset(error.status === 422
+        ? 'Not a real face — please try again'
+        : 'Connection problem — please try again')
+      return
+    }
+    if (res.data?.matched === true) {
+      noMatchRef.current = 0
+      showResult({ verified: true, visitorName: res.data.visitorName, similarity: res.data.similarity ?? 0 })
+      return
+    }
+    // A real person the system does not know. One miss can be a bad angle; a second in a row
+    // from the same visitor means they are not enrolled.
+    noMatchRef.current++
+    if (noMatchRef.current >= NO_MATCH_LIMIT) {
+      noMatchRef.current = 0
+      showResult({ verified: false, notEnrolled: true })
+      return
+    }
+    showErrorAndReset('Face not recognized — look directly at camera and try again')
+  }
+
+  // The challenge did not complete. A spoof verdict never arrives here, only from the server.
+  function handleLivenessError(err) {
+    console.error('[Liveness] onError:', err, 'state:', err?.state)
+    showErrorAndReset(LIVENESS_ERROR_TEXT[err?.state] ?? 'Scan failed — please try again')
   }
 
   function handleReset() {
+    attemptRef.current++
+    clearTimeout(resetTimerRef.current)
     clearInterval(countdownRef.current)
     cancelAnimationFrame(rafRef.current)
     idleRef.current = 'no_face'
@@ -435,6 +457,7 @@ export default function KioskPage() {
   function showErrorAndReset(msg) {
     if (handlingErrorRef.current) return
     handlingErrorRef.current = true
+    attemptRef.current++
     clearInterval(countdownRef.current)
     cancelAnimationFrame(rafRef.current)
     idleRef.current = 'no_face'
@@ -623,14 +646,7 @@ export default function KioskPage() {
                   sessionId={livenessSessionId}
                   region={import.meta.env.VITE_AWS_REGION || 'ap-south-1'}
                   onAnalysisComplete={handleLivenessComplete}
-                  onError={(err) => {
-                    console.error('[Liveness] onError:', err, 'state:', err?.state)
-                    const state = err?.state ?? ''
-                    const msg = (state === 'TIMEOUT' || state === 'FACE_FIT_TIMEOUT')
-                      ? 'Scan timed out — please try again'
-                      : 'Not a real face — please try again'
-                    showErrorAndReset(msg)
-                  }}
+                  onError={handleLivenessError}
                   disableStartScreen
                 />
               </div>
