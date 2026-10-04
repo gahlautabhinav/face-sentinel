@@ -372,7 +372,8 @@ aws:
 | "One at a time" keeps showing | Another face nearly as large as the front one is in frame | Others step back; the front face must be clearly larger (others at most 0.4 of its area) |
 | "Face detection offline" | MediaPipe could not load from its CDN, or keeps failing | Check the kiosk's internet access; "Tap to scan" still runs the AWS challenge |
 | "Camera unavailable" | Permission denied, camera missing or unplugged | Allow camera access for the page, press Retry |
-| Fast path never grants instantly | No blink seen in ~2 s, match below 93, low light, cooldown after a failed scan, or models failed to load (see browser console `[fast path]`) | Normal fallback is the AWS challenge; tune thresholds in `frontend/src/kioskLogic.mjs` |
+| Fast path never grants instantly | No blink seen in ~2 s, match below 93, low light, cooldown after a failed scan, or models failed to load (see browser console `[fast path]`) | Normal fallback is the AWS challenge. Open `/kiosk?debug` to see the reason live; tune thresholds in `frontend/src/kioskLogic.mjs` |
+| An enrolled person is "not recognized" now and then | An older copy of their face is still in the Rekognition collection without a database record | Handled: the server skips such stale faces and uses the next match. Backend log shows `has no visitor record … skipping` |
 | AWS credentials error | `spring-dotenv` only injects into Spring env, not `System.getenv()` | Use `@Value` in `AwsConfig` — already implemented |
 | Kiosk shows "Poor lighting" | Avg frame luminance < 30 | Improve ambient lighting at kiosk location |
 | Face covering warning always on | MediaPipe confidence < 0.65 | Check lighting; ensure face is fully visible |

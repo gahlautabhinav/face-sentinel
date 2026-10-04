@@ -13,7 +13,7 @@ Microservice handling visitor face enrollment, identification, and liveness-base
 | Database | PostgreSQL 15 + Flyway |
 | Auth | JWT (JJWT 0.12.6) — ADMIN + KIOSK roles |
 | Frontend | React 18 + Vite, MediaPipe BlazeFace + FaceLandmarker |
-| On-device anti-spoof | MiniFASNetV2 via onnxruntime-web (kiosk fast path) |
+| On-device anti-spoof | MiniFASNetV2 + MiniFASNetV1SE via onnxruntime-web (kiosk fast path) |
 | Container | Docker / Docker Compose |
 
 ---
@@ -50,7 +50,7 @@ Kiosk UI (React, WebRTC, MediaPipe)
 
 AWS Rekognition `SearchFacesByImage` matches face features but **cannot detect spoofing** — a high-quality photo or video on a phone screen can match an enrolled face with >90% similarity. The reliable spoof defence is the AWS Rekognition Face Liveness challenge, and it remains the judge for every scan the fast path does not clear.
 
-The **fast path** lets a real, enrolled person through without the challenge. While one clear, centred face is in view the kiosk samples about eight times a second; each sample reads one frozen video frame with:
+The **fast path** lets a real, enrolled person through without the challenge. While one clear, centred face is in view the kiosk samples about fifteen times a second; each sample reads one frozen video frame with:
 
 - **MiniFASNetV2 + MiniFASNetV1SE** (anti-spoof CNNs, run in the browser with onnxruntime-web) — each scores whether the face and its surroundings look like a live capture rather than a print or a screen. One looks at a close-up (face box × 2.7), the other at a wider view (× 4.0); the lower of the two scores counts
 - **MediaPipe FaceLandmarker** — eye closure and head pose, to require a blink made with the head held steady
@@ -63,6 +63,7 @@ Limits to know before relying on it:
 - A video replay also blinks, so against replay the defence is the anti-spoof model alone. **Test it against printed photos and phone/tablet videos on your own hardware before enabling it in production.**
 - After a spoof frame or a failed liveness check the fast path is off for 60 s (20 s after any other failed scan); the AWS path stays available.
 - Set `VITE_KIOSK_FAST_PATH=false` to always use the AWS challenge. Its models are then not downloaded at all.
+- Open `/kiosk?debug` to see, live, both anti-spoof scores, the eye and head-pose readings and why the fast path did or did not fire. Thresholds are constants at the top of `frontend/src/kioskLogic.mjs`.
 
 ### Who Decides the Identity
 
@@ -294,7 +295,7 @@ frontend/src/
 ├── kioskLogic.check.mjs   # its self-check (npm run check)
 └── fastPath.js      # anti-spoof model + blink sampling for the fast path
 
-frontend/public/models/   # MiniFASNetV2.onnx + NOTICE.txt (Apache-2.0)
+frontend/public/models/   # MiniFASNetV2.onnx, MiniFASNetV1SE.onnx + NOTICE.txt (Apache-2.0)
 ```
 
 ---
@@ -333,11 +334,12 @@ frontend/public/models/   # MiniFASNetV2.onnx + NOTICE.txt (Apache-2.0)
 - Rekognition `SearchFacesByImage` cannot detect spoofing — the AWS liveness challenge is the reliable spoof defence. The kiosk fast path skips it on the strength of a browser-side model and must be validated on your hardware first; `VITE_KIOSK_FAST_PATH=false` turns it off
 - `POST /api/face/identify` performs no liveness check; anything that calls it directly must be a trusted device
 - The IAM policy needs `rekognition:CompareFaces` (used to bind the kiosk frame to the liveness result)
-- The anti-spoof model `frontend/public/models/MiniFASNetV2.onnx` is from Silent-Face-Anti-Spoofing (Minivision), Apache License 2.0 — see `NOTICE.txt` beside it
+- The anti-spoof models in `frontend/public/models/` are from Silent-Face-Anti-Spoofing (Minivision), Apache License 2.0 — see `NOTICE.txt` beside them
 
 ---
 
 ## See Also
 
+- [ARCHITECTURE.md](ARCHITECTURE.md) — How the system works end to end: pipeline, models, and the deep-learning ideas behind them
 - [INTEGRATION.md](INTEGRATION.md) — How to integrate this module into your existing application
 - [DEPLOY.md](DEPLOY.md) — Production deployment guide (ECS Fargate, RDS, GitHub Actions)
