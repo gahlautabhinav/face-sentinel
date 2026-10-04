@@ -2,8 +2,9 @@ import { useRef, useEffect, useState } from 'react'
 import { FaceDetector as MPFaceDetector, FilesetResolver } from '@mediapipe/tasks-vision'
 import { createLivenessSession, identifyLive, identifyFace } from '../api/faceApi.js'
 import {
-  idleState, frontFace, fastPathVerdict, iou, identifyCropRect,
+  idleState, frontFace, fastPathVerdict, iou, identifyCropRect, fasCropRect,
   FAST_SAMPLE_MS, FAST_WINDOW_MS, FAST_PATH_MIN_SIMILARITY, FAST_PATH_COOLDOWN_MS, FAST_PATH_RETRY_MS, SAME_FACE_IOU,
+  FAS_LIVE_MIN, FAS_MIN_CROP_SCALE, BLINK_OPEN, BLINK_CLOSED,
 } from '../kioskLogic.mjs'
 import AccessResult from './AccessResult.jsx'
 import { FaceLivenessDetector } from '@aws-amplify/ui-react-liveness'
@@ -22,6 +23,28 @@ const DETECT_ERROR_LIMIT = 30    // consecutive failed frames before the detecto
 // Instant grant without the AWS challenge when the anti-spoof model and a blink both say "live"
 // and the face match is strong. On unless VITE_KIOSK_FAST_PATH=false. See fastPath.js.
 const FAST_PATH = import.meta.env.VITE_KIOSK_FAST_PATH !== 'false'
+// Open /kiosk?debug to see, live, why the fast path is or is not firing. The thresholds in
+// kioskLogic.mjs have to be tuned on the real camera, and this is the read-out for that.
+const DEBUG = new URLSearchParams(window.location.search).has('debug')
+
+// One line explaining the latest fast-path sample, for the ?debug read-out.
+function describeFastPath(sample, samples, verdict, box, frame) {
+  if (!sample) {
+    if (fasCropRect(box, frame.width, frame.height)) return 'no sample: face landmarks not found in the crop'
+    const fit = Math.min(frame.width / box.w, frame.height / box.h)
+    return `no sample: face too close. Face is ${Math.round(box.h)}px of a ${frame.height}px frame, so only `
+      + `${fit.toFixed(2)}x of its surroundings fit; the anti-spoof model needs ${FAS_MIN_CROP_SCALE}x. Step back.`
+  }
+  const closedPeak = Math.max(...samples.map(s => Math.min(s.eyeL, s.eyeR)))
+  const openLow = Math.min(...samples.map(s => Math.max(s.eyeL, s.eyeR)))
+  const liveLow = Math.min(...samples.map(s => s.live))
+  const span = Math.round(samples[samples.length - 1].t - samples[0].t)
+  return `verdict: ${verdict.reason}\n`
+    + `live ${sample.live.toFixed(2)}, lowest in window ${liveLow.toFixed(2)} (need >= ${FAS_LIVE_MIN})\n`
+    + `eyes now ${sample.eyeL.toFixed(2)}/${sample.eyeR.toFixed(2)}; in window: most open ${openLow.toFixed(2)} `
+    + `(need <= ${BLINK_OPEN}), most closed ${closedPeak.toFixed(2)} (need >= ${BLINK_CLOSED})\n`
+    + `head yaw ${sample.yaw.toFixed(0)} pitch ${sample.pitch.toFixed(0)} · ${samples.length} samples over ${span} ms`
+}
 const NO_MATCH_LIMIT = 2         // consecutive "real person, no match" results before "Not Enrolled"
 const NO_FACE_RESET_MS = 2000    // visitor gone this long: forget their no-match count
 
@@ -118,6 +141,7 @@ export default function KioskPage() {
   const [idle, setIdle] = useState('no_face')
   const [othersBehind, setOthersBehind] = useState(false)
   const [fastChecking, setFastChecking] = useState(false)
+  const [debugText, setDebugText] = useState('')
   const [lowLight, setLowLight] = useState(false)
 
   async function acquireCamera(isCancelled = () => false) {
@@ -354,7 +378,18 @@ export default function KioskPage() {
     const now = performance.now()
     const usable = state === 'ready' && !dark && fast.antiSpoof && fast.landmarker
       && now >= fastBlockedUntilRef.current && !startingRef.current
-    if (!usable) { samplesRef.current = []; return }
+    if (!usable) {
+      samplesRef.current = []
+      if (DEBUG && !startingRef.current) {
+        setDebugText('fast path waiting: ' + (
+          !fast.antiSpoof ? 'anti-spoof model not loaded (yet)'
+            : !fast.landmarker ? 'face landmarker not loaded (yet)'
+              : state !== 'ready' ? `kiosk state is "${state}", needs "ready"`
+                : dark ? 'low light'
+                  : `cooldown, ${Math.ceil((fastBlockedUntilRef.current - now) / 1000)} s left`))
+      }
+      return
+    }
     if (samplingRef.current || now - lastSampleAtRef.current < FAST_SAMPLE_MS) return
     samplingRef.current = true
     lastSampleAtRef.current = now
@@ -376,11 +411,13 @@ export default function KioskPage() {
         // jumped elsewhere starts it over.
         if (!sample || (prev.length && iou(prev[prev.length - 1].box, box) < SAME_FACE_IOU)) {
           samplesRef.current = sample ? [{ ...sample, box }] : []
+          if (DEBUG) setDebugText(sample ? 'face moved: sample run restarted' : describeFastPath(null, [], null, box, frame))
           return
         }
         const samples = [...prev, { ...sample, box }].filter(s => now - s.t <= FAST_WINDOW_MS)
         samplesRef.current = samples
         const verdict = fastPathVerdict(samples)
+        if (DEBUG) setDebugText(describeFastPath(sample, samples, verdict, box, frame))
         if (verdict.spoof) {
           console.warn('[fast path] spoof frame, live score', sample.live.toFixed(2))
           blockFastPath(FAST_PATH_COOLDOWN_MS)
@@ -430,6 +467,11 @@ export default function KioskPage() {
       }
       // Looked live, but no match or not a strong one: AWS liveness decides, with this frame
       // as the better-angle image the server may fall back on.
+      const why = data?.matched === true
+        ? `match too weak for an instant grant (similarity ${data.similarity}, need >= ${FAST_PATH_MIN_SIMILARITY})`
+        : 'no match from the identify call'
+      console.log(`[fast path] looked live, but ${why}; using the liveness check`)
+      if (DEBUG) setDebugText(`looked live, but ${why}\n-> liveness check`)
       capturedBlobRef.current = blob
       await startLiveness()
       if (attempt === attemptRef.current) startingRef.current = false
@@ -683,6 +725,17 @@ export default function KioskPage() {
           transition: 'opacity 0.3s',
         }}
       />
+
+      {DEBUG && FAST_PATH && debugText && (
+        <div style={{
+          position: 'absolute', top: 64, left: 12, zIndex: 200, maxWidth: 560,
+          font: '12px/1.5 ui-monospace, Consolas, monospace', whiteSpace: 'pre-wrap',
+          color: '#7dd3fc', background: 'rgba(0,0,0,0.72)', padding: '8px 12px', borderRadius: 8,
+          pointerEvents: 'none',
+        }}>
+          {debugText}
+        </div>
+      )}
 
       {phase === 'idle' && (
         <>
