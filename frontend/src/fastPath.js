@@ -50,9 +50,21 @@ export function loadAntiSpoof() {
 }
 
 // vision: the FilesetResolver result the kiosk already has for its face detector.
+// The kiosk rebuilds the landmarker after every AWS liveness scan, so the model file is fetched
+// once and kept; a rebuild then costs no network round trip.
+let landmarkerModel = null
+async function landmarkerModelBytes() {
+  if (!landmarkerModel) {
+    const res = await fetch(LANDMARKER_MODEL)
+    if (!res.ok) throw new Error(`face landmarker model: HTTP ${res.status}`)
+    landmarkerModel = new Uint8Array(await res.arrayBuffer())
+  }
+  return landmarkerModel
+}
+
 export async function createLandmarker(vision) {
   const landmarker = await FaceLandmarker.createFromOptions(vision, {
-    baseOptions: { modelAssetPath: LANDMARKER_MODEL, delegate: 'GPU' },
+    baseOptions: { modelAssetBuffer: await landmarkerModelBytes(), delegate: 'GPU' },
     runningMode: 'IMAGE',
     numFaces: 1,
     outputFaceBlendshapes: true,

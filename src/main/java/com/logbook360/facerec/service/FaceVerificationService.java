@@ -82,13 +82,19 @@ public class FaceVerificationService {
                     .build();
         }
 
-        FaceMatch bestMatch = searchResponse.faceMatches().get(0);
-        String matchedRekFaceId = bestMatch.face().faceId();
-        double similarity = bestMatch.similarity();
-
-        VisitorFace matchedFace = visitorFaceRepository
-                .findByRekognitionFaceIdAndTenantId(matchedRekFaceId, tenantId)
-                .orElse(null);
+        // Best match first. A stale face with no database record can outrank the visitor's current
+        // enrollment, so look through the candidates for the first one the database knows.
+        double similarity = searchResponse.faceMatches().get(0).similarity();
+        VisitorFace matchedFace = null;
+        for (FaceMatch match : searchResponse.faceMatches()) {
+            matchedFace = visitorFaceRepository
+                    .findByRekognitionFaceIdAndTenantId(match.face().faceId(), tenantId)
+                    .orElse(null);
+            if (matchedFace != null) {
+                similarity = match.similarity();
+                break;
+            }
+        }
 
         if (matchedFace == null || !matchedFace.getVisitorId().equals(visitorId)) {
             saveLog(tenantId, visitorId, RecognitionLog.RecognitionStatus.NO_MATCH, similarity, null);

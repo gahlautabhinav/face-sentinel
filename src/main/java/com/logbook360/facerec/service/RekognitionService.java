@@ -14,6 +14,8 @@ import java.util.List;
 @Slf4j
 public class RekognitionService {
 
+    private static final int SEARCH_MAX_FACES = 10;
+
     private final RekognitionClient rekognitionClient;
 
     public void createCollectionIfNotExists(String collectionId) {
@@ -41,12 +43,14 @@ public class RekognitionService {
                 .build());
     }
 
+    // Returns several candidates, best first, not just the top one: the top hit can be a face
+    // whose database record no longer exists, and callers need the next one down.
     public SearchFacesByImageResponse searchFacesByImage(String collectionId, byte[] imageBytes, float threshold) {
         return rekognitionClient.searchFacesByImage(SearchFacesByImageRequest.builder()
                 .collectionId(collectionId)
                 .image(Image.builder().bytes(SdkBytes.fromByteArray(imageBytes)).build())
                 .faceMatchThreshold(threshold)
-                .maxFaces(1)
+                .maxFaces(SEARCH_MAX_FACES)
                 .build());
     }
 

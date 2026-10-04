@@ -82,38 +82,41 @@ public class FaceIdentificationService {
                 .build();
         }
 
-        FaceMatch bestMatch = searchResponse.faceMatches().get(0);
-        String rekognitionFaceId = bestMatch.face().faceId();
-        double similarity = bestMatch.similarity();
+        // Matches come best first. The collection can still hold faces whose database record is
+        // gone (left behind by an earlier enrollment of the same person). Such a stale copy can
+        // outrank the current enrollment, so skip it and keep looking instead of reporting no match.
+        Double staleSimilarity = null;
+        for (FaceMatch match : searchResponse.faceMatches()) {
+            String rekognitionFaceId = match.face().faceId();
+            double similarity = match.similarity();
 
-        VisitorFace visitorFace = visitorFaceRepository
-            .findByRekognitionFaceIdAndTenantId(rekognitionFaceId, tenantId)
-            .orElse(null);
-        if (visitorFace == null) {
-            log.warn("Rekognition matched face {} but no DB record found for tenant {}", rekognitionFaceId, tenantId);
-            saveLog(tenantId, null, RecognitionLog.RecognitionAction.IDENTIFY,
-                RecognitionLog.RecognitionStatus.NO_MATCH, similarity, "Orphaned Rekognition face ID");
-            return FaceIdentifyResponse.builder().matched(false).message("No matching visitor found").build();
+            VisitorFace visitorFace = visitorFaceRepository
+                .findByRekognitionFaceIdAndTenantId(rekognitionFaceId, tenantId)
+                .orElse(null);
+            Visitor visitor = visitorFace == null ? null
+                : visitorRepository.findById(visitorFace.getVisitorId()).orElse(null);
+            if (visitor == null) {
+                log.warn("Rekognition face {} matched at {}% but has no visitor record for tenant {}; skipping",
+                    rekognitionFaceId, similarity, tenantId);
+                if (staleSimilarity == null) staleSimilarity = similarity;
+                continue;
+            }
+
+            saveLog(tenantId, visitor.getId(), RecognitionLog.RecognitionAction.IDENTIFY,
+                RecognitionLog.RecognitionStatus.SUCCESS, similarity, null);
+
+            return FaceIdentifyResponse.builder()
+                .matched(true)
+                .visitorId(visitor.getId())
+                .visitorName(visitor.getName())
+                .similarity(similarity)
+                .message("Visitor identified successfully")
+                .build();
         }
 
-        Visitor visitor = visitorRepository.findById(visitorFace.getVisitorId()).orElse(null);
-        if (visitor == null) {
-            log.warn("VisitorFace {} found but visitor {} missing", rekognitionFaceId, visitorFace.getVisitorId());
-            saveLog(tenantId, null, RecognitionLog.RecognitionAction.IDENTIFY,
-                RecognitionLog.RecognitionStatus.NO_MATCH, similarity, "Visitor record missing");
-            return FaceIdentifyResponse.builder().matched(false).message("No matching visitor found").build();
-        }
-
-        saveLog(tenantId, visitor.getId(), RecognitionLog.RecognitionAction.IDENTIFY,
-            RecognitionLog.RecognitionStatus.SUCCESS, similarity, null);
-
-        return FaceIdentifyResponse.builder()
-            .matched(true)
-            .visitorId(visitor.getId())
-            .visitorName(visitor.getName())
-            .similarity(similarity)
-            .message("Visitor identified successfully")
-            .build();
+        saveLog(tenantId, null, RecognitionLog.RecognitionAction.IDENTIFY,
+            RecognitionLog.RecognitionStatus.NO_MATCH, staleSimilarity, "Orphaned Rekognition face ID");
+        return FaceIdentifyResponse.builder().matched(false).message("No matching visitor found").build();
     }
 
     private void saveLog(UUID tenantId, UUID visitorId,

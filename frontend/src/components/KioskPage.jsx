@@ -47,6 +47,9 @@ function describeFastPath(sample, samples, verdict, box, frame) {
 }
 const NO_MATCH_LIMIT = 2         // consecutive "real person, no match" results before "Not Enrolled"
 const NO_FACE_RESET_MS = 2000    // visitor gone this long: forget their no-match count
+// Longest the countdown waits for the fast-path models. Only a cold first page load comes near
+// it (a 14 MB runtime download); rebuilds after a scan take well under a second.
+const FAST_LOAD_GRACE_MS = 15000
 
 // FaceLivenessDetector error states (LivenessErrorState) the kiosk explains; the rest get a generic line.
 const LIVENESS_ERROR_TEXT = {
@@ -122,6 +125,8 @@ export default function KioskPage() {
   const detectorDirtyRef = useRef(false)   // FaceLivenessDetector ran: MediaPipe must be rebuilt
   // Fast path (all null/empty when the flag is off or its models could not load)
   const fastRef = useRef({ antiSpoof: null, landmarker: null, takeSample: null })
+  const fastLoadingRef = useRef(false)
+  const fastLoadSeqRef = useRef(0)
   const samplesRef = useRef([])
   const samplingRef = useRef(false)
   const lastSampleAtRef = useRef(0)
@@ -141,6 +146,7 @@ export default function KioskPage() {
   const [idle, setIdle] = useState('no_face')
   const [othersBehind, setOthersBehind] = useState(false)
   const [fastChecking, setFastChecking] = useState(false)
+  const [fastLoading, setFastLoading] = useState(false)
   const [debugText, setDebugText] = useState('')
   const [lowLight, setLowLight] = useState(false)
 
@@ -173,6 +179,8 @@ export default function KioskPage() {
       if (isCancelled()) { detector.close(); return }
       faceDetectorRef.current = detector
       detectorRef.current = 'ready'
+      // One MediaPipe graph at a time: building the landmarker while the detector is still
+      // being built left the detector stuck. The countdown waits for the fast-path models.
       if (FAST_PATH) await initFastPath(vision, isCancelled)
     } catch (e) {
       console.error('[MediaPipe] init failed:', e)
@@ -185,19 +193,31 @@ export default function KioskPage() {
     const fast = fastRef.current
     try { fast.landmarker?.close() } catch { /* already broken */ }
     fast.landmarker = null
+    // The countdown holds while this is true, otherwise it would reach the AWS scan before the
+    // models are ready and the fast path would never get a turn. Bounded, so a stalled download
+    // only delays the scan, never blocks it.
+    // (Only the latest load may clear it: an earlier, cancelled one finishing must not.)
+    const load = ++fastLoadSeqRef.current
+    const doneLoading = () => { if (load === fastLoadSeqRef.current) fastLoadingRef.current = false }
+    fastLoadingRef.current = true
+    const giveUp = setTimeout(doneLoading, FAST_LOAD_GRACE_MS)
     try {
       const fp = await import('../fastPath.js')
       fast.takeSample = fp.takeSample
       // The anti-spoof session does not depend on MediaPipe, so it loads once, in parallel,
       // and survives the landmarker being rebuilt after every AWS scan.
-      fp.loadAntiSpoof().then(
+      const antiSpoofLoad = fp.loadAntiSpoof().then(
         antiSpoof => { fast.antiSpoof = antiSpoof },
         e => console.error('[fast path] anti-spoof model unavailable:', e))
       const landmarker = await fp.createLandmarker(vision)
       if (isCancelled()) { landmarker.close(); return }
       fast.landmarker = landmarker
+      await antiSpoofLoad
     } catch (e) {
       console.error('[fast path] unavailable, using AWS liveness only:', e)
+    } finally {
+      clearTimeout(giveUp)
+      doneLoading()
     }
   }
 
@@ -241,7 +261,7 @@ export default function KioskPage() {
     setCountdown(COUNTDOWN_START)
     let n = COUNTDOWN_START
     countdownRef.current = setInterval(() => {
-      if (idleRef.current !== 'ready') {
+      if (idleRef.current !== 'ready' || fastLoadingRef.current) {
         n = COUNTDOWN_START
         setCountdown(COUNTDOWN_START)
         return
@@ -328,6 +348,7 @@ export default function KioskPage() {
       idleRef.current = next
       setIdle(next)
       setOthersBehind(faces.length > 1)
+      setFastLoading(fastLoadingRef.current)
 
       // A visitor who walks away takes their "not recognized" count with them.
       // Only counted while the detector works, so its reload after a scan does not look like an empty kiosk.
@@ -764,7 +785,9 @@ export default function KioskPage() {
                     ? IDLE_TEXT[idle][1]
                     : fastChecking
                       ? 'Checking…'
-                      : `Starting in ${countdown}…${othersBehind ? ' · scanning the person in front' : ''}`}
+                      : fastLoading
+                        ? 'Getting ready…'
+                        : `Starting in ${countdown}…${othersBehind ? ' · scanning the person in front' : ''}`}
                 </div>
                 {idle === 'no_camera' && (
                   <button style={idleButtonStyle} onClick={() => acquireCamera()}>Retry camera</button>

@@ -94,4 +94,60 @@ class FaceIdentificationServiceTest {
 
         assertThat(response.isMatched()).isFalse();
     }
+
+    private static FaceMatch match(String faceId, float similarity) {
+        return FaceMatch.builder().similarity(similarity).face(Face.builder().faceId(faceId).build()).build();
+    }
+
+    @Test
+    void skipsStaleFaceThatOutranksTheCurrentEnrollment() {
+        UUID tenantId = UUID.randomUUID();
+        UUID visitorId = UUID.randomUUID();
+
+        VisitorFace face = new VisitorFace();
+        face.setVisitorId(visitorId);
+        face.setTenantId(tenantId);
+        face.setRekognitionFaceId("current-face");
+
+        Visitor visitor = new Visitor();
+        visitor.setId(visitorId);
+        visitor.setName("Ravi Kumar");
+        visitor.setTenantId(tenantId);
+
+        // Same person enrolled twice in Rekognition; the older copy has no database record
+        when(rekognitionService.searchFacesByImage(anyString(), any(), anyFloat()))
+            .thenReturn(SearchFacesByImageResponse.builder()
+                .faceMatches(match("stale-face", 100.0f), match("current-face", 99.8f))
+                .build());
+        when(visitorFaceRepository.findByRekognitionFaceIdAndTenantId("stale-face", tenantId))
+            .thenReturn(Optional.empty());
+        when(visitorFaceRepository.findByRekognitionFaceIdAndTenantId("current-face", tenantId))
+            .thenReturn(Optional.of(face));
+        when(visitorRepository.findById(visitorId)).thenReturn(Optional.of(visitor));
+        when(recognitionLogRepository.save(any())).thenAnswer(i -> i.getArgument(0));
+
+        FaceIdentifyResponse response = service.identifyFaceFromBytes(tenantId, new byte[16]);
+
+        assertThat(response.isMatched()).isTrue();
+        assertThat(response.getVisitorName()).isEqualTo("Ravi Kumar");
+        assertThat(response.getSimilarity()).isCloseTo(99.8, within(0.01));
+    }
+
+    @Test
+    void returnsNoMatchWhenEveryCandidateIsStale() {
+        UUID tenantId = UUID.randomUUID();
+
+        when(rekognitionService.searchFacesByImage(anyString(), any(), anyFloat()))
+            .thenReturn(SearchFacesByImageResponse.builder()
+                .faceMatches(match("stale-1", 100.0f), match("stale-2", 98.0f))
+                .build());
+        when(visitorFaceRepository.findByRekognitionFaceIdAndTenantId(anyString(), eq(tenantId)))
+            .thenReturn(Optional.empty());
+        when(recognitionLogRepository.save(any())).thenAnswer(i -> i.getArgument(0));
+
+        FaceIdentifyResponse response = service.identifyFaceFromBytes(tenantId, new byte[16]);
+
+        assertThat(response.isMatched()).isFalse();
+        verify(visitorRepository, never()).findById(any());
+    }
 }
