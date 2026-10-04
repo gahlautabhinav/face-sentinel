@@ -95,7 +95,7 @@ mvn spring-boot:run "-Dspring-boot.run.profiles=local"
 ```
 
 Profile `local` (`application-local.yml`) sets:
-- DB: `localhost:5433`
+- DB: `localhost:5435`
 - Region: `ap-south-1`
 - Collection prefix: `logbook360-dev`
 - Liveness: disabled

@@ -165,7 +165,7 @@ Response:
    ADMIN_CLIENT_SECRET=<secret>
    KIOSK_CLIENT_ID=logbook360-kiosk
    KIOSK_CLIENT_SECRET=<secret>
-   DB_URL=jdbc:postgresql://localhost:5433/logbook360_face
+   DB_URL=jdbc:postgresql://localhost:5435/logbook360_face
    DB_USERNAME=postgres
    DB_PASSWORD=postgres
    ```

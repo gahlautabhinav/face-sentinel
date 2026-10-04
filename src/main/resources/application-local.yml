@@ -1,6 +1,6 @@
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5433/logbook360_face
+    url: jdbc:postgresql://localhost:5435/logbook360_face
     username: postgres
     password: postgres
   jpa:
