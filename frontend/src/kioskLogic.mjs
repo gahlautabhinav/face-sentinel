@@ -33,14 +33,78 @@ export function idleState({ cameraOk, detector, faces, prev }) {
 
 // --- Fast path -------------------------------------------------------------------------------
 
+export const FAST_SAMPLE_MS = 125      // one sample this often while a face is ready (~8 per second)
+export const FAST_WINDOW_MS = 2000     // the verdict looks at the samples of the last this-many ms
+export const FAST_PATH_MIN_SIMILARITY = 93    // face match needed for an instant grant
+export const FAST_PATH_COOLDOWN_MS = 60000    // no fast path after a spoof frame or a failed liveness check
+export const FAST_PATH_RETRY_MS = 20000       // no fast path after any scan that ended without a result
+export const FAS_CROP_SCALE = 2.7      // anti-spoof crop = face box x this (the model was trained on it)
+export const FAS_MIN_CROP_SCALE = 2.0  // face so close that less than this fits: no fast path
+export const SAME_FACE_IOU = 0.5       // below this overlap with the previous sample it is a different face
 export const FAS_LIVE_MIN = 0.90       // anti-spoof "real" score every sample must reach
 export const FAS_SPOOF_MAX = 0.20      // at or below this a sample is clearly a spoof
 export const FAS_MIN_FRAMES = 5
 export const FAS_MIN_SPAN_MS = 800
-export const BLINK_CLOSED = 0.5        // eyeBlink blendshape: both eyes at or above = closed
-export const BLINK_OPEN = 0.2          // both eyes at or below = open
+export const BLINK_CLOSED = 0.6        // eyeBlink blendshape: both eyes at or above = closed
+export const BLINK_OPEN = 0.35         // both eyes at or below = open (a smiling face reads about 0.28)
 export const BLINK_MAX_MS = 800        // open -> closed -> open must complete within this
 export const BLINK_MAX_POSE_DEG = 8    // head must not rotate more than this during the blink
+
+// The region the anti-spoof model looks at: the face box scaled about its centre, slid to stay
+// inside the frame. As in the model's own code the scale shrinks when the frame is too small for
+// it, but only down to FAS_MIN_CROP_SCALE: below that there is too little around the face to
+// judge, so there is no crop and no fast path.
+// box and result: { x, y, w, h } in frame pixels.
+export function fasCropRect(box, frameW, frameH, scale = FAS_CROP_SCALE) {
+  const fit = Math.min(scale, frameW / box?.w, frameH / box?.h)
+  if (!(fit >= FAS_MIN_CROP_SCALE && box.w > 0 && box.h > 0)) return null
+  const w = box.w * fit, h = box.h * fit
+  const clamp = (v, max) => Math.min(Math.max(v, 0), max)
+  return {
+    x: clamp(box.x + box.w / 2 - w / 2, frameW - w),
+    y: clamp(box.y + box.h / 2 - h / 2, frameH - h),
+    w, h,
+  }
+}
+
+// Face box plus 20% padding per side, cut at the frame edge: the image sent for identification.
+export function identifyCropRect(box, frameW, frameH) {
+  const x = Math.max(0, box.x - box.w * 0.2)
+  const y = Math.max(0, box.y - box.h * 0.2)
+  return {
+    x, y,
+    w: Math.min(box.x + box.w * 1.2, frameW) - x,
+    h: Math.min(box.y + box.h * 1.2, frameH) - y,
+  }
+}
+
+// Canvas pixels (RGBA, row by row) -> the model's input: float32, planar B, G, R, values 0-255.
+export function toBgrChw(rgba, size) {
+  const n = size * size
+  const out = new Float32Array(3 * n)
+  for (let i = 0; i < n; i++) {
+    out[i] = rgba[i * 4 + 2]
+    out[n + i] = rgba[i * 4 + 1]
+    out[2 * n + i] = rgba[i * 4]
+  }
+  return out
+}
+
+export function softmax(logits) {
+  const max = Math.max(...logits)
+  const exps = Array.from(logits, v => Math.exp(v - max))
+  const sum = exps.reduce((a, b) => a + b, 0)
+  return exps.map(v => v / sum)
+}
+
+// Overlap of two { x, y, w, h } boxes, 0..1.
+export function iou(a, b) {
+  const ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)
+  const iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y)
+  if (!(ix > 0 && iy > 0)) return 0
+  const inter = ix * iy
+  return inter / (a.w * a.h + b.w * b.h - inter)
+}
 
 const SAMPLE_FIELDS = ['t', 'live', 'eyeL', 'eyeR', 'yaw', 'pitch']
 const validSample = s => !!s && SAMPLE_FIELDS.every(k => Number.isFinite(s[k]))

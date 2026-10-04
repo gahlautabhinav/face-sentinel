@@ -1,7 +1,10 @@
 import { useRef, useEffect, useState } from 'react'
 import { FaceDetector as MPFaceDetector, FilesetResolver } from '@mediapipe/tasks-vision'
-import { createLivenessSession, identifyLive } from '../api/faceApi.js'
-import { idleState, frontFace } from '../kioskLogic.mjs'
+import { createLivenessSession, identifyLive, identifyFace } from '../api/faceApi.js'
+import {
+  idleState, frontFace, fastPathVerdict, iou, identifyCropRect,
+  FAST_SAMPLE_MS, FAST_WINDOW_MS, FAST_PATH_MIN_SIMILARITY, FAST_PATH_COOLDOWN_MS, FAST_PATH_RETRY_MS, SAME_FACE_IOU,
+} from '../kioskLogic.mjs'
 import AccessResult from './AccessResult.jsx'
 import { FaceLivenessDetector } from '@aws-amplify/ui-react-liveness'
 import '@aws-amplify/ui-react/styles.css'
@@ -16,6 +19,9 @@ const LOW_LIGHT_THRESHOLD = 30   // avg luminance 0-255; below = warn user
 const LUM_CANVAS_W = 64
 const LUM_CANVAS_H = 48
 const DETECT_ERROR_LIMIT = 30    // consecutive failed frames before the detector counts as broken
+// Instant grant without the AWS challenge when the anti-spoof model and a blink both say "live"
+// and the face match is strong. On unless VITE_KIOSK_FAST_PATH=false. See fastPath.js.
+const FAST_PATH = import.meta.env.VITE_KIOSK_FAST_PATH !== 'false'
 const NO_MATCH_LIMIT = 2         // consecutive "real person, no match" results before "Not Enrolled"
 const NO_FACE_RESET_MS = 2000    // visitor gone this long: forget their no-match count
 
@@ -81,7 +87,6 @@ export default function KioskPage() {
   const faceDetectorRef = useRef(null)
   const rafRef = useRef(null)
   const faceBoxRef = useRef(null)
-  const prevPhaseRef = useRef('idle')
   const handlingErrorRef = useRef(false)
   const lumCanvasRef = useRef(null)
   const cameraOkRef = useRef(true)
@@ -91,6 +96,14 @@ export default function KioskPage() {
   const startingRef = useRef(false)
   const handleCompleteRef = useRef(false)
   const attemptRef = useRef(0)      // bumped on every reset; lets a late server answer be recognised as stale
+  const detectorDirtyRef = useRef(false)   // FaceLivenessDetector ran: MediaPipe must be rebuilt
+  // Fast path (all null/empty when the flag is off or its models could not load)
+  const fastRef = useRef({ antiSpoof: null, landmarker: null, takeSample: null })
+  const samplesRef = useRef([])
+  const samplingRef = useRef(false)
+  const lastSampleAtRef = useRef(0)
+  const fastBlockedUntilRef = useRef(0)
+  const frameCanvasRef = useRef(null)
   const noMatchRef = useRef(0)
   const resetTimerRef = useRef(null)
 
@@ -104,6 +117,7 @@ export default function KioskPage() {
   const [faceBox, setFaceBox] = useState(null)
   const [idle, setIdle] = useState('no_face')
   const [othersBehind, setOthersBehind] = useState(false)
+  const [fastChecking, setFastChecking] = useState(false)
   const [lowLight, setLowLight] = useState(false)
 
   async function acquireCamera(isCancelled = () => false) {
@@ -135,9 +149,31 @@ export default function KioskPage() {
       if (isCancelled()) { detector.close(); return }
       faceDetectorRef.current = detector
       detectorRef.current = 'ready'
+      if (FAST_PATH) await initFastPath(vision, isCancelled)
     } catch (e) {
       console.error('[MediaPipe] init failed:', e)
       if (!isCancelled()) detectorRef.current = 'failed'
+    }
+  }
+
+  // Optional: if these models cannot load, the kiosk simply works through AWS liveness as before.
+  async function initFastPath(vision, isCancelled) {
+    const fast = fastRef.current
+    try { fast.landmarker?.close() } catch { /* already broken */ }
+    fast.landmarker = null
+    try {
+      const fp = await import('../fastPath.js')
+      fast.takeSample = fp.takeSample
+      // The anti-spoof session does not depend on MediaPipe, so it loads once, in parallel,
+      // and survives the landmarker being rebuilt after every AWS scan.
+      fp.loadAntiSpoof().then(
+        antiSpoof => { fast.antiSpoof = antiSpoof },
+        e => console.error('[fast path] anti-spoof model unavailable:', e))
+      const landmarker = await fp.createLandmarker(vision)
+      if (isCancelled()) { landmarker.close(); return }
+      fast.landmarker = landmarker
+    } catch (e) {
+      console.error('[fast path] unavailable, using AWS liveness only:', e)
     }
   }
 
@@ -159,16 +195,17 @@ export default function KioskPage() {
   // Entering idle (first mount, or back from a scan): make sure camera and face detector are alive.
   // FaceLivenessDetector stops camera tracks and corrupts MediaPipe state on unmount.
   useEffect(() => {
-    if (phase !== 'idle') { prevPhaseRef.current = phase; return }
-    const backFromScan = prevPhaseRef.current !== 'idle'
-    prevPhaseRef.current = phase
+    if (phase !== 'idle') return
 
     let cancelled = false
     const isCancelled = () => cancelled
 
     const tracks = streamRef.current?.getTracks() || []
     if (tracks.length === 0 || tracks.some(t => t.readyState === 'ended')) acquireCamera(isCancelled)
-    if (backFromScan || !faceDetectorRef.current) initDetector(isCancelled)
+    if (detectorDirtyRef.current || !faceDetectorRef.current) {
+      detectorDirtyRef.current = false
+      initDetector(isCancelled)
+    }
 
     return () => { cancelled = true }
   }, [phase])
@@ -278,6 +315,7 @@ export default function KioskPage() {
       }
 
       // Downsample frame for average luminance (low-light hint)
+      let dark = false
       if (videoReady && lumCanvasRef.current) {
         const ctx = lumCanvasRef.current.getContext('2d', { willReadFrequently: true })
         ctx.drawImage(video, 0, 0, LUM_CANVAS_W, LUM_CANVAS_H)
@@ -288,8 +326,11 @@ export default function KioskPage() {
           const p = i * 4
           lumSum += (data[p] * 77 + data[p + 1] * 150 + data[p + 2] * 29) >> 8
         }
-        setLowLight(lumSum / n < LOW_LIGHT_THRESHOLD)
+        dark = lumSum / n < LOW_LIGHT_THRESHOLD
+        setLowLight(dark)
       }
+
+      if (FAST_PATH) sampleForFastPath(video, front, next, dark)
 
       if (!cancelled) rafRef.current = requestAnimationFrame(tick)
     }
@@ -300,9 +341,108 @@ export default function KioskPage() {
     }
   }, [phase])
 
+  function blockFastPath(ms) {
+    fastBlockedUntilRef.current = Math.max(fastBlockedUntilRef.current, performance.now() + ms)
+    samplesRef.current = []
+  }
+
+  // Fast path, called every frame from the tick. While one clear, centred face is in view it
+  // gathers a sample about every FAST_SAMPLE_MS. It can only ever add a quicker grant: when the
+  // samples do not justify one, nothing happens and the countdown leads to AWS liveness as usual.
+  function sampleForFastPath(video, front, state, dark) {
+    const fast = fastRef.current
+    const now = performance.now()
+    const usable = state === 'ready' && !dark && fast.antiSpoof && fast.landmarker
+      && now >= fastBlockedUntilRef.current && !startingRef.current
+    if (!usable) { samplesRef.current = []; return }
+    if (samplingRef.current || now - lastSampleAtRef.current < FAST_SAMPLE_MS) return
+    samplingRef.current = true
+    lastSampleAtRef.current = now
+
+    // Freeze this frame: the anti-spoof score, the blink reading and the image sent for
+    // identification all come from it, so they are all about the same face at the same moment.
+    const frame = (frameCanvasRef.current ??= document.createElement('canvas'))
+    frame.width = video.videoWidth
+    frame.height = video.videoHeight
+    frame.getContext('2d').drawImage(video, 0, 0)
+    const box = { x: front.bbox.originX, y: front.bbox.originY, w: front.bbox.width, h: front.bbox.height }
+    const attempt = attemptRef.current
+
+    fast.takeSample({ antiSpoof: fast.antiSpoof, landmarker: fast.landmarker, frame, box, t: now })
+      .then(sample => {
+        if (attempt !== attemptRef.current || startingRef.current) return
+        const prev = samplesRef.current
+        // The evidence must be one unbroken run on one face: an unusable frame or a face that
+        // jumped elsewhere starts it over.
+        if (!sample || (prev.length && iou(prev[prev.length - 1].box, box) < SAME_FACE_IOU)) {
+          samplesRef.current = sample ? [{ ...sample, box }] : []
+          return
+        }
+        const samples = [...prev, { ...sample, box }].filter(s => now - s.t <= FAST_WINDOW_MS)
+        samplesRef.current = samples
+        const verdict = fastPathVerdict(samples)
+        if (verdict.spoof) {
+          console.warn('[fast path] spoof frame, live score', sample.live.toFixed(2))
+          blockFastPath(FAST_PATH_COOLDOWN_MS)
+        } else if (verdict.pass) {
+          return fastIdentify(frame, box)
+        }
+      })
+      .catch(e => {
+        console.error('[fast path] sample failed:', e)
+        samplesRef.current = []
+      })
+      .finally(() => { samplingRef.current = false })
+  }
+
+  // The samples say "live". Identify from that same frame and grant only on a strong match;
+  // anything less goes to the AWS liveness check.
+  async function fastIdentify(frame, box) {
+    const tenantId = getKioskTenantId()
+    if (!tenantId || startingRef.current) return
+    startingRef.current = true
+    const attempt = attemptRef.current
+    samplesRef.current = []
+    try {
+      // Cut the identification image now, before the next sample overwrites the frame
+      const crop = identifyCropRect(box, frame.width, frame.height)
+      const canvas = document.createElement('canvas')
+      canvas.width = canvas.height = 400
+      canvas.getContext('2d').drawImage(frame, crop.x, crop.y, crop.w, crop.h, 0, 0, 400, 400)
+      setFastChecking(true)
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.95))
+
+      let data
+      try {
+        data = (await identifyFace({ tenantId, imageFile: blob })).data
+      } catch { /* network problem: same as "not sure" */ }
+      // Reset while waiting: the reset already released the lock, and this answer is stale
+      if (attempt !== attemptRef.current) return
+      setFastChecking(false)
+      clearInterval(countdownRef.current)
+
+      if (data?.matched === true && Number.isFinite(data.similarity) && data.similarity >= FAST_PATH_MIN_SIMILARITY) {
+        console.log('[fast path] granted, similarity', data.similarity)
+        startingRef.current = false
+        noMatchRef.current = 0
+        showResult({ verified: true, visitorName: data.visitorName, similarity: data.similarity })
+        return
+      }
+      // Looked live, but no match or not a strong one: AWS liveness decides, with this frame
+      // as the better-angle image the server may fall back on.
+      capturedBlobRef.current = blob
+      await startLiveness()
+      if (attempt === attemptRef.current) startingRef.current = false
+    } catch (e) {
+      console.error('[fast path] identify step failed:', e)
+      if (attempt === attemptRef.current) showErrorAndReset('Scan failed — please try again')
+    }
+  }
+
   async function startLiveness() {
     try {
       const res = await createLivenessSession('KIOSK')
+      detectorDirtyRef.current = true
       // Release our camera stream before FaceLivenessDetector acquires it.
       // Prevents concurrent getUserMedia conflict that crashes the liveness component.
       // Done only once the session exists, so a failed start leaves the idle camera running.
@@ -407,9 +547,8 @@ export default function KioskPage() {
     if (error) {
       console.error('[Liveness] identify failed:', error)
       // 422 is the server saying liveness did not pass. Anything else is an outage, not a spoof.
-      showErrorAndReset(error.status === 422
-        ? 'Not a real face — please try again'
-        : 'Connection problem — please try again')
+      if (error.status === 422) showErrorAndReset('Not a real face — please try again', FAST_PATH_COOLDOWN_MS)
+      else showErrorAndReset('Connection problem — please try again')
       return
     }
     if (res.data?.matched === true) {
@@ -436,6 +575,8 @@ export default function KioskPage() {
 
   function handleReset() {
     attemptRef.current++
+    samplesRef.current = []
+    setFastChecking(false)
     clearTimeout(resetTimerRef.current)
     clearInterval(countdownRef.current)
     cancelAnimationFrame(rafRef.current)
@@ -454,10 +595,13 @@ export default function KioskPage() {
     setIdle('no_face')
   }
 
-  function showErrorAndReset(msg) {
+  function showErrorAndReset(msg, fastCooldownMs = FAST_PATH_RETRY_MS) {
     if (handlingErrorRef.current) return
     handlingErrorRef.current = true
     attemptRef.current++
+    // A scan that ended without a result earns no immediate second try at the fast path
+    blockFastPath(fastCooldownMs)
+    setFastChecking(false)
     clearInterval(countdownRef.current)
     cancelAnimationFrame(rafRef.current)
     idleRef.current = 'no_face'
@@ -563,9 +707,11 @@ export default function KioskPage() {
                   {idle === 'ready' ? 'Hold still' : IDLE_TEXT[idle][0]}
                 </div>
                 <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.35)' }}>
-                  {idle === 'ready'
-                    ? `Starting in ${countdown}…${othersBehind ? ' · scanning the person in front' : ''}`
-                    : IDLE_TEXT[idle][1]}
+                  {idle !== 'ready'
+                    ? IDLE_TEXT[idle][1]
+                    : fastChecking
+                      ? 'Checking…'
+                      : `Starting in ${countdown}…${othersBehind ? ' · scanning the person in front' : ''}`}
                 </div>
                 {idle === 'no_camera' && (
                   <button style={idleButtonStyle} onClick={() => acquireCamera()}>Retry camera</button>

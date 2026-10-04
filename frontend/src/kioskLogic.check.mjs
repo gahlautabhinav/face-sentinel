@@ -1,6 +1,8 @@
 // Self-check for kioskLogic.mjs. Run: npm run check  (or: node src/kioskLogic.check.mjs)
 import assert from 'node:assert/strict'
-import { idleState, frontFace, blinkSeen, fastPathVerdict } from './kioskLogic.mjs'
+import {
+  idleState, frontFace, blinkSeen, fastPathVerdict, fasCropRect, identifyCropRect, toBgrChw, softmax, iou,
+} from './kioskLogic.mjs'
 
 // --- idleState -------------------------------------------------------------------------------
 
@@ -123,5 +125,44 @@ assert.equal(verdict(withLive(5, 0.5)).spoof, false, 'a doubtful frame is not a 
 assert.equal(verdict(seq([0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1])).reason, 'no blink')
 // a blink without good scores is not enough either
 assert.equal(verdict(good.map(s => ({ ...s, live: 0.6 }))).reason, 'live score too low')
+
+// --- fast-path geometry and model input ------------------------------------------------------
+
+// centred 100px face in a 1280x720 frame: 270px crop around it
+assert.deepEqual(fasCropRect({ x: 590, y: 310, w: 100, h: 100 }, 1280, 720), { x: 505, y: 225, w: 270, h: 270 })
+// near the top edge: same size, slid down to stay inside
+assert.deepEqual(fasCropRect({ x: 590, y: 20, w: 100, h: 100 }, 1280, 720), { x: 505, y: 0, w: 270, h: 270 })
+// near the bottom-right corner: slid up and left
+assert.deepEqual(fasCropRect({ x: 1170, y: 610, w: 100, h: 100 }, 1280, 720), { x: 1010, y: 450, w: 270, h: 270 })
+// a closer face: the scale shrinks to what the frame allows (here 720 / 300 = 2.4)
+assert.deepEqual(fasCropRect({ x: 400, y: 100, w: 300, h: 300 }, 1280, 720), { x: 190, y: 0, w: 720, h: 720 })
+// closer still: under the 2.0 floor there is too little around the face, so no crop, no fast path
+assert.deepEqual(fasCropRect({ x: 400, y: 100, w: 360, h: 360 }, 1280, 720), { x: 220, y: 0, w: 720, h: 720 }, 'exactly 2.0 fits')
+assert.equal(fasCropRect({ x: 400, y: 100, w: 361, h: 361 }, 1280, 720), null, 'just under 2.0')
+assert.equal(fasCropRect({ x: 0, y: 0, w: 700, h: 700 }, 1280, 720), null)
+assert.equal(fasCropRect(null, 1280, 720), null)
+assert.equal(fasCropRect({ x: 0, y: 0, w: NaN, h: 100 }, 1280, 720), null)
+assert.equal(fasCropRect({ x: 0, y: 0, w: 0, h: 0 }, 1280, 720), null)
+
+// identification image: face box plus 20% each side, cut at the frame edge
+assert.deepEqual(identifyCropRect({ x: 500, y: 300, w: 100, h: 100 }, 1280, 720), { x: 480, y: 280, w: 140, h: 140 })
+assert.deepEqual(identifyCropRect({ x: 10, y: 5, w: 100, h: 100 }, 1280, 720), { x: 0, y: 0, w: 130, h: 125 })
+assert.deepEqual(identifyCropRect({ x: 1200, y: 640, w: 100, h: 100 }, 1280, 720), { x: 1180, y: 620, w: 100, h: 100 })
+
+// 2x2 image, pixels (R,G,B): (1,2,3) (4,5,6) (7,8,9) (10,11,12) -> planes B, G, R
+assert.deepEqual(
+  Array.from(toBgrChw([1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255], 2)),
+  [3, 6, 9, 12, 2, 5, 8, 11, 1, 4, 7, 10])
+
+const sm = softmax([1, 3, 1])
+assert.ok(Math.abs(sm.reduce((a, b) => a + b) - 1) < 1e-9)
+assert.ok(sm[1] > 0.78 && sm[1] < 0.79 && sm[0] === sm[2])
+assert.ok(softmax([1000, 1001, 999]).every(Number.isFinite), 'large logits must not overflow')
+
+const b = (x, y, w, h) => ({ x, y, w, h })
+assert.equal(iou(b(0, 0, 10, 10), b(0, 0, 10, 10)), 1)
+assert.equal(iou(b(0, 0, 10, 10), b(20, 20, 10, 10)), 0)
+assert.equal(iou(b(0, 0, 10, 10), b(10, 0, 10, 10)), 0, 'touching boxes do not overlap')
+assert.ok(Math.abs(iou(b(0, 0, 10, 10), b(5, 0, 10, 10)) - 1 / 3) < 1e-9)
 
 console.log('kioskLogic: all checks passed')

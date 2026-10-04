@@ -56,7 +56,7 @@ export async function identifyFace({ tenantId, imageFile }) {
     headers: { 'X-Tenant-Id': tenantId },
     body: form,
   })
-  return res.json()
+  return okJson(res)
 }
 
 export async function verifyFace({ tenantId, visitorId, imageBlob }) {
