@@ -33,7 +33,9 @@ export function idleState({ cameraOk, detector, faces, prev }) {
 
 // --- Fast path -------------------------------------------------------------------------------
 
-export const FAST_SAMPLE_MS = 125      // one sample this often while a face is ready (~8 per second)
+// One sample this often while a face is ready (~15 per second). A blink is fully closed for only
+// about 100 ms; at 125 ms between samples the peak was missed (read 0.46 on a real blink).
+export const FAST_SAMPLE_MS = 66
 export const FAST_WINDOW_MS = 2000     // the verdict looks at the samples of the last this-many ms
 export const FAST_PATH_MIN_SIMILARITY = 93    // face match needed for an instant grant
 export const FAST_PATH_COOLDOWN_MS = 60000    // no fast path after a spoof frame or a failed liveness check
@@ -45,7 +47,7 @@ export const FAS_LIVE_MIN = 0.90       // anti-spoof "real" score every sample m
 export const FAS_SPOOF_MAX = 0.20      // at or below this a sample is clearly a spoof
 export const FAS_MIN_FRAMES = 5
 export const FAS_MIN_SPAN_MS = 800
-export const BLINK_CLOSED = 0.6        // eyeBlink blendshape: both eyes at or above = closed
+export const BLINK_CLOSED = 0.45       // eyeBlink blendshape: both eyes at or above = closed
 export const BLINK_OPEN = 0.35         // both eyes at or below = open (a smiling face reads about 0.28)
 export const BLINK_MAX_MS = 800        // open -> closed -> open must complete within this
 export const BLINK_MAX_POSE_DEG = 8    // head must not rotate more than this during the blink
