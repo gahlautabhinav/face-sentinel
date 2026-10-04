@@ -148,8 +148,8 @@ Response:
 
 1. Clone and copy env files:
    ```bash
-   git clone https://github.com/gahlautabhinav/lb-face-recog.git
-   cd lb-face-recog
+   git clone https://github.com/gahlautabhinav/face-sentinel.git
+   cd face-sentinel
    cp .env.example .env
    cp frontend/.env.example frontend/.env.local
    ```
