@@ -1,16 +1,22 @@
 // Browser side of the kiosk fast path: loads the two models and turns one frozen video frame
 // into one sample for fastPathVerdict (kioskLogic.mjs).
 //
-//   anti-spoof: MiniFASNetV2 (Silent-Face-Anti-Spoofing, Apache-2.0) via onnxruntime-web.
-//               Scores how much the face and its surroundings look like a live capture rather
-//               than a print or a screen.
+//   anti-spoof: MiniFASNetV2 + MiniFASNetV1SE (Silent-Face-Anti-Spoofing, Apache-2.0) via
+//               onnxruntime-web. Each scores how much the face and its surroundings look like a
+//               live capture rather than a print or a screen; the lower score counts.
 //   blink:      MediaPipe FaceLandmarker blendshapes, plus head pose from its transform matrix.
 //
 // Loaded only when the fast path is enabled, so with the flag off none of this is fetched.
 import { FaceLandmarker } from '@mediapipe/tasks-vision'
 import { fasCropRect, toBgrChw, softmax } from './kioskLogic.mjs'
 
-const ANTI_SPOOF_MODEL = `${import.meta.env.BASE_URL}models/MiniFASNetV2.onnx`
+// The anti-spoof project ships its model as a pair, each trained on a different amount of
+// surroundings: a close-up view and a wide view (more background, more chance to catch the
+// edge of a phone or a print). Both must call the face real.
+const ANTI_SPOOF_MODELS = [
+  { name: 'near', file: 'MiniFASNetV2.onnx', scale: 2.7 },
+  { name: 'wide', file: 'MiniFASNetV1SE.onnx', scale: 4.0 },
+]
 const LANDMARKER_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task'
 const REAL_CLASS = 1            // model output index for "real face"; the others are spoof types
 const LANDMARK_CROP_SCALE = 1.8 // landmarker sees the face box x this, so it cannot pick another face
@@ -24,26 +30,34 @@ export function loadAntiSpoof() {
     const ort = await import('onnxruntime-web/wasm')
     ort.env.wasm.numThreads = 1   // no worker, no cross-origin isolation needed
     ort.env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ort.env.versions.web}/dist/`
-    const session = await ort.InferenceSession.create(ANTI_SPOOF_MODEL, { executionProviders: ['wasm'] })
-    const inputName = session.inputNames[0]
-    const outputName = session.outputNames[0]
-    const dims = session.inputMetadata?.[0]?.shape
-    const size = Number.isInteger(dims?.[2]) ? dims[2] : 80
-    const scratch = document.createElement('canvas')
-    scratch.width = scratch.height = size
-    const ctx = scratch.getContext('2d', { willReadFrequently: true })
+    const models = await Promise.all(ANTI_SPOOF_MODELS.map(async ({ name, file, scale }) => {
+      const session = await ort.InferenceSession.create(
+        `${import.meta.env.BASE_URL}models/${file}`, { executionProviders: ['wasm'] })
+      const dims = session.inputMetadata?.[0]?.shape
+      const size = Number.isInteger(dims?.[2]) ? dims[2] : 80
+      const scratch = document.createElement('canvas')
+      scratch.width = scratch.height = size
+      return { name, scale, session, size, ctx: scratch.getContext('2d', { willReadFrequently: true }) }
+    }))
 
     // frame: canvas holding one video frame. box: face { x, y, w, h } in its pixels.
-    // Returns the "real" probability 0..1, or null when the surroundings do not fit in the frame.
-    async function score(frame, box, scale) {
-      const crop = fasCropRect(box, frame.width, frame.height, scale)
-      if (!crop) return null
-      ctx.drawImage(frame, crop.x, crop.y, crop.w, crop.h, 0, 0, size, size)
-      const input = toBgrChw(ctx.getImageData(0, 0, size, size).data, size)
-      const out = await session.run({ [inputName]: new ort.Tensor('float32', input, [1, 3, size, size]) })
-      return softmax(out[outputName].data)[REAL_CLASS]
+    // Returns { live, near, wide }: each model's "real" probability 0..1 and `live`, the lower of
+    // the two. Returns null when too little of the surroundings fits in the frame.
+    async function score(frame, box) {
+      const result = {}
+      for (const m of models) {
+        const crop = fasCropRect(box, frame.width, frame.height, m.scale)
+        if (!crop) return null
+        m.ctx.drawImage(frame, crop.x, crop.y, crop.w, crop.h, 0, 0, m.size, m.size)
+        const input = toBgrChw(m.ctx.getImageData(0, 0, m.size, m.size).data, m.size)
+        const out = await m.session.run(
+          { [m.session.inputNames[0]]: new ort.Tensor('float32', input, [1, 3, m.size, m.size]) })
+        result[m.name] = softmax(out[m.session.outputNames[0]].data)[REAL_CLASS]
+      }
+      result.live = Math.min(result.near, result.wide)
+      return result
     }
-    return { score, size }
+    return { score }
   })()
   antiSpoofPromise.catch(() => { antiSpoofPromise = null })   // allow a later retry
   return antiSpoofPromise
@@ -110,7 +124,7 @@ function readFace(landmarker, frame, box) {
 export async function takeSample({ antiSpoof, landmarker, frame, box, t }) {
   const face = readFace(landmarker, frame, box)
   if (!face) return null
-  const live = await antiSpoof.score(frame, box)
-  if (live === null) return null
-  return { t, live, ...face }
+  const spoof = await antiSpoof.score(frame, box)
+  if (!spoof) return null
+  return { t, live: spoof.live, liveNear: spoof.near, liveWide: spoof.wide, ...face }
 }

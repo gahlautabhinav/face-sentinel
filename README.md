@@ -52,7 +52,7 @@ AWS Rekognition `SearchFacesByImage` matches face features but **cannot detect s
 
 The **fast path** lets a real, enrolled person through without the challenge. While one clear, centred face is in view the kiosk samples about eight times a second; each sample reads one frozen video frame with:
 
-- **MiniFASNetV2** (anti-spoof CNN, run in the browser with onnxruntime-web) — scores whether the face and its surroundings look like a live capture rather than a print or a screen
+- **MiniFASNetV2 + MiniFASNetV1SE** (anti-spoof CNNs, run in the browser with onnxruntime-web) — each scores whether the face and its surroundings look like a live capture rather than a print or a screen. One looks at a close-up (face box × 2.7), the other at a wider view (× 4.0); the lower of the two scores counts
 - **MediaPipe FaceLandmarker** — eye closure and head pose, to require a blink made with the head held steady
 
 Access is granted instantly only when every sample in the window scores live, a blink is seen, and the face match is 93 or higher. Otherwise nothing changes and the countdown leads to the AWS challenge.

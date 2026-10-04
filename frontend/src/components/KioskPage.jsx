@@ -40,7 +40,8 @@ function describeFastPath(sample, samples, verdict, box, frame) {
   const liveLow = Math.min(...samples.map(s => s.live))
   const span = Math.round(samples[samples.length - 1].t - samples[0].t)
   return `verdict: ${verdict.reason}\n`
-    + `live ${sample.live.toFixed(2)}, lowest in window ${liveLow.toFixed(2)} (need >= ${FAS_LIVE_MIN})\n`
+    + `live ${sample.live.toFixed(2)} (close-up model ${sample.liveNear.toFixed(2)}, wide model ${sample.liveWide.toFixed(2)}), `
+    + `lowest in window ${liveLow.toFixed(2)} (need >= ${FAS_LIVE_MIN})\n`
     + `eyes now ${sample.eyeL.toFixed(2)}/${sample.eyeR.toFixed(2)}; in window: most open ${openLow.toFixed(2)} `
     + `(need <= ${BLINK_OPEN}), most closed ${closedPeak.toFixed(2)} (need >= ${BLINK_CLOSED})\n`
     + `head yaw ${sample.yaw.toFixed(0)} pitch ${sample.pitch.toFixed(0)} · ${samples.length} samples over ${span} ms`
