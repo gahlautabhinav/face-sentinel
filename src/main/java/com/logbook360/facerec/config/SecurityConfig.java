@@ -58,7 +58,8 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(List.of("http://localhost:3000"));
+        // Both spellings of the local dev server: a browser opened on 127.0.0.1 sends that as Origin
+        config.setAllowedOrigins(List.of("http://localhost:3000", "http://127.0.0.1:3000"));
         config.setAllowedMethods(List.of("GET", "POST", "DELETE", "PUT", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setExposedHeaders(List.of("X-Tenant-Id"));

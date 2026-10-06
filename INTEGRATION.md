@@ -319,7 +319,7 @@ Key prod differences:
 
 ## CORS Configuration
 
-By default the backend allows `http://localhost:3000`. For production, update `SecurityConfig.java`:
+By default the backend allows the local dev server under both of its names, `http://localhost:3000` and `http://127.0.0.1:3000`. A page opened from any other origin gets `403` on every API call, including the token request. For production, update `SecurityConfig.java` (and the matching list in `CorsConfig.java`):
 
 ```java
 config.setAllowedOrigins(List.of(
@@ -362,6 +362,7 @@ aws:
 |---|---|---|
 | `401 Unauthorized` | Token expired or wrong credentials | Re-fetch token; check client ID/secret |
 | `403 Forbidden` | Wrong role (ADMIN endpoint called with KIOSK token) | Use correct token for endpoint |
+| `403` on every call, even `/api/auth/token`, body `Invalid CORS request` | Page opened from an origin the backend does not allow | Open it on `localhost:3000` or `127.0.0.1:3000`, or add your origin to the allowlist (see CORS Configuration) |
 | `404` on identify | Rekognition face ID exists but no DB record | Orphaned face — re-enroll visitor |
 | `matched: false` for known person | Similarity below threshold or bad angle during challenge | Lower threshold in dev (`75.0`); ensure enrolment photo is well-lit and front-facing |
 | Liveness "TIMEOUT" | User too slow or face not visible | Instruct user to remove coverings, use better lighting |
