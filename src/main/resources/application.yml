@@ -48,8 +48,11 @@ auth:
   kiosk-client-id: ${KIOSK_CLIENT_ID:logbook360-kiosk}
   kiosk-client-secret: ${KIOSK_CLIENT_SECRET:changeme-kiosk-secret}
 
+cors:
+  allowed-origins: ${ALLOWED_ORIGINS:http://localhost:3000,http://127.0.0.1:3000}
+
 server:
-  port: 8080
+  port: ${PORT:8080}
   error:
     include-message: never
     include-stacktrace: never

@@ -4,6 +4,7 @@ import com.logbook360.facerec.security.JwtFilter;
 import com.logbook360.facerec.security.JwtService;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -25,6 +26,11 @@ import java.util.List;
 public class SecurityConfig {
 
     private final JwtService jwtService;
+
+    // Page origins allowed to call the API: comma-separated ALLOWED_ORIGINS. The default covers
+    // both spellings of the local dev server (a browser opened on 127.0.0.1 sends that as Origin).
+    @Value("${cors.allowed-origins}")
+    private String[] allowedOrigins;
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
@@ -58,8 +64,7 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        // Both spellings of the local dev server: a browser opened on 127.0.0.1 sends that as Origin
-        config.setAllowedOrigins(List.of("http://localhost:3000", "http://127.0.0.1:3000"));
+        config.setAllowedOrigins(List.of(allowedOrigins));
         config.setAllowedMethods(List.of("GET", "POST", "DELETE", "PUT", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setExposedHeaders(List.of("X-Tenant-Id"));

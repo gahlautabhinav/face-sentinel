@@ -1,0 +1,45 @@
+# Render blueprint for the backend. The frontend is on Vercel (frontend/vercel.json) and the
+# database on Neon. Values marked sync: false are secrets set in Render, never committed.
+services:
+  - type: web
+    name: face-sentinel-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: singapore
+    autoDeploy: false
+    envVars:
+      - key: DB_URL
+        sync: false
+      - key: DB_USERNAME
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: AWS_REGION
+        value: ap-south-1
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_S3_BUCKET
+        sync: false
+      # Own Rekognition collection, so the live site and a local dev setup never share faces
+      - key: REKOGNITION_COLLECTION_PREFIX
+        value: logbook360-live
+      - key: REKOGNITION_SIMILARITY_THRESHOLD
+        value: "90.0"
+      - key: FACE_LIVENESS_ENABLED
+        value: "false"
+      - key: JWT_SECRET
+        sync: false
+      - key: ADMIN_CLIENT_ID
+        value: logbook360-admin
+      - key: ADMIN_CLIENT_SECRET
+        sync: false
+      - key: KIOSK_CLIENT_ID
+        value: logbook360-kiosk
+      - key: KIOSK_CLIENT_SECRET
+        sync: false
+      # The Vercel address of the frontend
+      - key: ALLOWED_ORIGINS
+        sync: false

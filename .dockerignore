@@ -1,0 +1,12 @@
+# The backend image needs only pom.xml and src/
+.git
+.env
+.env.*
+target
+frontend
+graphify-out
+*.md
+plan*.md
+.claude
+.idea
+.vscode
