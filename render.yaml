@@ -6,7 +6,7 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     plan: free
-    region: singapore
+    region: virginia   # next to the Neon database (AWS us-east-1)
     autoDeploy: false
     envVars:
       - key: DB_URL
