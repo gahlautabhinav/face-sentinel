@@ -1,7 +1,6 @@
 package com.logbook360.facerec.service;
 
 import com.logbook360.facerec.domain.RecognitionLog;
-import com.logbook360.facerec.domain.Tenant;
 import com.logbook360.facerec.domain.Visitor;
 import com.logbook360.facerec.domain.VisitorFace;
 import com.logbook360.facerec.dto.response.EnrollmentDto;
@@ -106,14 +105,8 @@ public class FaceEnrollmentService {
     @Transactional
     public FaceEnrollResponse enrollFaceFromBytes(UUID tenantId, byte[] imageBytes,
                                                   String visitorName, String email, String mobile) {
-        // Auto-create tenant row if it doesn't exist yet
-        if (!tenantRepository.existsById(tenantId)) {
-            Tenant tenant = new Tenant();
-            tenant.setId(tenantId);
-            tenant.setName("LogBook360");
-            tenant.setRekognitionCollectionId(collectionPrefix + "-" + tenantId);
-            tenantRepository.save(tenant);
-        }
+        // Auto-create tenant row if it doesn't exist yet (first enrollment on a fresh database)
+        tenantRepository.insertIfAbsent(tenantId, "LogBook360", collectionPrefix + "-" + tenantId);
 
         // Create visitor record — DB generates the UUID
         Visitor visitor = new Visitor();
