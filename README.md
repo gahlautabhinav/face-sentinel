@@ -289,8 +289,8 @@ src/main/java/com/logbook360/facerec/
 
 frontend/src/
 ├── api/             # faceApi.js, authApi.js
-├── components/      # AdminPage, EnrollPage, IdentifyPage, DeletePage,
-│                    # KioskPage, AccessResult, RegisterPage
+├── components/      # AdminPage (list + delete), EnrollPage, RegisterPage,
+│                    # KioskPage, AccessResult
 ├── kioskLogic.mjs   # pure kiosk decisions: idle state, queue rule, fast-path verdict
 ├── kioskLogic.check.mjs   # its self-check (npm run check)
 └── fastPath.js      # anti-spoof model + blink sampling for the fast path
