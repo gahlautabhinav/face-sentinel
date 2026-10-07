@@ -151,6 +151,48 @@ The kiosk and enrollment UI uses AWS Amplify's `FaceLivenessDetector`, which nee
 
 ---
 
+## Live Demo Deployment (Vercel + Render + Neon)
+
+A low-cost hosted copy for demonstrations. Not the production design (that is the ECS section below).
+
+```
+browser ──► Vercel   face-sentinel.vercel.app        static frontend, HTTPS
+               │  /api/*  forwarded by frontend/vercel.json
+               ▼
+            Render   face-sentinel-api.onrender.com  backend, built from ./Dockerfile
+               │
+               ├──► Neon   Postgres 16, AWS us-east-1   schema created by Flyway on first start
+               └──► AWS    Rekognition, Face Liveness, S3 (ap-south-1)
+```
+
+| Part | Where | Configured by |
+|---|---|---|
+| Frontend | Vercel project `face-sentinel`, root `frontend/` | `frontend/vercel.json`; `VITE_*` variables set in Vercel (production) |
+| Backend | Render web service `face-sentinel-api`, Docker, free plan, region `virginia` | `render.yaml` lists every variable; secrets are set in Render, never committed |
+| Database | Neon project `face-sentinel` | `DB_URL`, `DB_USERNAME`, `DB_PASSWORD` on the backend |
+| Keep-alive | GitHub Actions, every 10 minutes | `.github/workflows/keep-alive.yml` |
+
+Things that matter when changing it:
+
+- **`ALLOWED_ORIGINS`** on the backend must contain the frontend's address (`https://face-sentinel.vercel.app`). A page served from any other origin gets `403 Invalid CORS request` on every call.
+- **`PORT`** is supplied by the host; the backend listens on it (`server.port: ${PORT:8080}`).
+- **`REKOGNITION_COLLECTION_PREFIX=logbook360-live`** gives the demo its own face collection, so it never shares or deletes faces with a local development setup. Faces must be enrolled on the live site itself.
+- `VITE_*` values are baked in at build time: after changing one in Vercel, redeploy the frontend.
+- The free backend sleeps after about 15 minutes without traffic; the keep-alive workflow prevents that. Remove the workflow when the demo is retired.
+- **The admin and kiosk client secrets are visible in the frontend's JavaScript.** Anyone with the URL can obtain an admin token. Use secrets that exist only for this deployment, do not publicise the URL, and set an AWS budget alert.
+
+Redeploy:
+
+```powershell
+# frontend (from frontend/, logged in to the owning Vercel account)
+vercel deploy --prod
+
+# backend (rebuilds from the main branch on GitHub)
+render deploys create <service-id> --confirm
+```
+
+---
+
 ## Production: AWS ECS Fargate
 
 ### Architecture
