@@ -14,8 +14,6 @@ jobs:
     steps:
       - name: Request the backend
         run: |
-          # No credentials are sent: an unauthenticated request is answered with 401, which is
-          # all that is needed to count as traffic.
           code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 150 \
-            https://face-sentinel-api.onrender.com/api/face/enrollments || true)
+            https://face-sentinel-api.onrender.com/api/health || true)
           echo "backend answered HTTP $code"
